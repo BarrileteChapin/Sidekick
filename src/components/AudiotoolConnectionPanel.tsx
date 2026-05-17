@@ -116,7 +116,13 @@ export function AudiotoolConnectionPanel({
       : state.authenticated
         ? `Logged in${state.userName ? ` as ${state.userName}` : ''}`
         : 'Not logged in';
-    const syncStatusLabel = isMockMode ? 'Login not configured' : state.connected ? 'Project synced' : 'No project synced';
+    const syncStatusLabel = isMockMode
+      ? 'Login not configured'
+      : state.connected
+        ? 'Project synced'
+        : state.projectUrl
+          ? 'Sync offline'
+          : 'No project synced';
     const summaryMessage = isMockMode ? runtimeSource : state.message;
 
     return (
@@ -153,7 +159,7 @@ export function AudiotoolConnectionPanel({
       <h2 id="audiotool-connection-title">Audiotool connection</h2>
       <div className="pill-row">
         <span className="pill">{state.authenticated ? `Logged in${state.userName ? ` as ${state.userName}` : ''}` : 'Not logged in'}</span>
-        <span className="pill">{state.connected ? 'Project synced' : 'No project synced'}</span>
+        <span className="pill">{state.connected ? 'Project synced' : state.projectUrl ? 'Sync offline' : 'No project synced'}</span>
       </div>
       {renderConnectedControls(state, true)}
     </section>

@@ -34,10 +34,11 @@ export class AudiotoolSdkNexusClient implements NexusClient {
     await this.ensureAuth();
     const authResult = this.authResult;
     const authenticated = authResult?.status === 'authenticated';
+    const syncConnected = this.document?.connected.getValue() ?? false;
     return {
       mode: 'audiotool-sdk',
       authenticated,
-      connected: Boolean(this.document),
+      connected: Boolean(this.document && syncConnected),
       userName: authResult?.status === 'authenticated' ? authResult.userName : undefined,
       projectUrl: this.projectUrl ?? undefined,
       redirectUrl: this.redirectUrl,
@@ -129,6 +130,9 @@ export class AudiotoolSdkNexusClient implements NexusClient {
     if (!this.document) {
       throw new Error('Sync an Audiotool project before inserting MIDI.');
     }
+    if (!this.document.connected.getValue()) {
+      throw new Error('Audiotool sync is temporarily offline. Re-sync the project and try inserting again.');
+    }
 
     const noteTracks = getNoteTracks(this.document);
     const explicitTarget = options.targetTrackId ? noteTracks.find((track) => track.id === options.targetTrackId) : null;
@@ -145,12 +149,17 @@ export class AudiotoolSdkNexusClient implements NexusClient {
     if (generatedTracks.length === 0) {
       throw new Error('Generated MIDI has no notes to insert.');
     }
+    const startBeat = Math.max(0, options.startBeat ?? 0);
+    const maxTrackLengthBeats = Math.max(...generatedTracks.map((track) => getGeneratedTrackLengthBeats(track, midi.request.bars * 4)));
+    const requiredDurationTicks = beatsToTicks(startBeat + maxTrackLengthBeats);
 
     // Track which noteTracks are already claimed so we don't double-assign.
     const claimedNoteTrackIds = new Set<string>();
     distributedTargets.forEach((target) => { if (target) claimedNoteTrackIds.add(target.id); });
 
-    await this.document.modify((transaction) => {
+    const insertedRegions = await this.document.modify((transaction) => {
+      ensureTimelineDuration(transaction, requiredDurationTicks);
+      const regions: InsertedRegionSummary[] = [];
       generatedTracks.forEach((generatedTrack, index) => {
         let noteTrack: NoteTrackTarget;
         if (options.trackMode === 'selected') {
@@ -172,9 +181,24 @@ export class AudiotoolSdkNexusClient implements NexusClient {
             );
           }
         }
-        insertGeneratedTrack(transaction, midi, generatedTrack, noteTrack, options.startBeat ?? 0);
+        regions.push(insertGeneratedTrack(transaction, midi, generatedTrack, noteTrack, startBeat));
       });
+      return regions;
     });
+
+    const noteRegions = this.document.queryEntities.ofTypes('noteRegion').get();
+    const insertedRegionIds = new Set(insertedRegions.map((region) => region.regionId));
+    const visibleRegions = noteRegions.filter((region) => insertedRegionIds.has(region.id)).length;
+    if (visibleRegions !== insertedRegions.length) {
+      console.warn(
+        `[Sidekick] Insert transaction committed ${insertedRegions.length} region(s), but only ${visibleRegions} ` +
+        'can be queried immediately. If this persists, refresh project sync.'
+      );
+    }
+    console.info(
+      `[Sidekick] Inserted ${insertedRegions.length} MIDI region(s) at beat ${startBeat}. ` +
+      `Document online: ${this.document.connected.getValue()}.`
+    );
   }
 
   async createAdditionalNoteTracks(count: number): Promise<number> {
@@ -305,6 +329,9 @@ export class AudiotoolSdkNexusClient implements NexusClient {
     }
     if (!this.document) {
       return 'Paste a beta.audiotool.com project URL to sync Sidekick.';
+    }
+    if (!this.document.connected.getValue()) {
+      return 'Project is open, but live sync is offline. Changes will stay local until connection recovers.';
     }
     return 'Synced with Audiotool through @audiotool/nexus.';
   }
@@ -440,6 +467,10 @@ type NoteTrackTarget = {
 
 type MidiInsertTransaction = Parameters<SyncedDocument['modify']>[0] extends (transaction: infer T) => unknown ? T : never;
 
+type InsertedRegionSummary = {
+  regionId: string;
+};
+
 function getNoteTracks(document: SyncedDocument): NoteTrackTarget[] {
   return document.queryEntities.ofTypes('noteTrack').get().map((track) => ({
     id: track.id,
@@ -455,12 +486,10 @@ function insertGeneratedTrack(
   generatedTrack: GeneratedMidiTrack,
   noteTrack: NoteTrackTarget,
   startBeat: number
-): void {
-  const regionDurationTicks = beatsToTicks(
-    Math.max(...generatedTrack.notes.map((note) => note.startBeat + note.durationBeats), midi.request.bars * 4)
-  );
+): InsertedRegionSummary {
+  const regionDurationTicks = beatsToTicks(getGeneratedTrackLengthBeats(generatedTrack, midi.request.bars * 4));
   const collection = transaction.create('noteCollection', {});
-  transaction.create('noteRegion', {
+  const noteRegion = transaction.create('noteRegion', {
     collection: collection.location,
     track: noteTrack.location,
     region: {
@@ -485,6 +514,24 @@ function insertGeneratedTrack(
       doesSlide: false
     });
   });
+
+  return {
+    regionId: noteRegion.id
+  };
+}
+
+function ensureTimelineDuration(transaction: MidiInsertTransaction, requiredDurationTicks: number): void {
+  const config = transaction.entities.ofTypes('config').get()[0];
+  if (!config) return;
+
+  const currentDurationTicks = config.fields.durationTicks.value;
+  if (typeof currentDurationTicks !== 'number' || currentDurationTicks < requiredDurationTicks) {
+    transaction.update(config.fields.durationTicks, requiredDurationTicks);
+  }
+}
+
+function getGeneratedTrackLengthBeats(track: GeneratedMidiTrack, fallbackBeats: number): number {
+  return Math.max(...track.notes.map((note) => note.startBeat + note.durationBeats), fallbackBeats);
 }
 
 function colorIndexForRole(role: GeneratedMidiTrack['role']): number {

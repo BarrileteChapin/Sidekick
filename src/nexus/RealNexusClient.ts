@@ -16,7 +16,7 @@ export type AudiotoolNexusLike = {
   };
   midi?: {
     preview?: (bytes: Uint8Array) => Promise<void> | void;
-    insert?: (bytes: Uint8Array, options?: { targetTrackId?: string }) => Promise<void> | void;
+    insert?: (bytes: Uint8Array, options?: { targetTrackId?: string; startBeat?: number; trackMode?: 'distribute' | 'selected' }) => Promise<void> | void;
   };
 };
 
@@ -27,7 +27,12 @@ export class RealNexusClient implements NexusClient {
   constructor(private readonly nexus: AudiotoolNexusLike) {
     if (nexus.midi?.insert) {
       this.insertMidi = async (midi: GeneratedMidi, options?: MidiInsertOptions) => {
-        await nexus.midi?.insert?.(midi.midiBytes, { targetTrackId: options?.targetTrackId });
+        const targetTrackId = options?.targetTrackId ?? options?.targetTrackIds?.[0];
+        await nexus.midi?.insert?.(midi.midiBytes, {
+          targetTrackId,
+          startBeat: options?.startBeat,
+          trackMode: options?.trackMode
+        });
       };
     }
     if (nexus.project?.setBpm) {
