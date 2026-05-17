@@ -4,7 +4,7 @@
 
 It helps producers move from a blank project to a workable musical idea by combining two complementary workflows:
 
-1. **Generate inspiration** — create MIDI-based melody, chord, bass, and rhythm ideas using a rule-based motif engine inspired by MotifMachine.
+1. **Generate inspiration** — create MIDI-based melody, chord, and bass ideas using a rule-based engine.
 2. **Learn from references** — upload a reference song, analyze its musical characteristics with an LLM-powered assistant, and translate those insights into actions inside an Audiotool project.
 
 Sidekick is designed as a creative assistant, not an autopilot. It gives you musical starting points, explains production ideas, and helps shape them into your own track.
@@ -170,21 +170,6 @@ When full arrangement mode is enabled:
 * Chords remain polyphonic.
 
 This creates a usable sketch that a producer can edit, replace, or build upon.
-
-\---
-
-### Drum and Rhythm Generation
-
-Sidekick can also use a fixed drum kit across genres:
-
-* Kick
-* Snare / Clap
-* Closed Hat
-* Open Hat
-* Perc / Rim
-* Tom / Fill
-
-Genre identity comes from rhythm parameters rather than changing the kit itself. For example, Afro House, UK Garage, Trap, Reggaeton, Amapiano, and Drum \& Bass can all use the same six drum voices, but with different kick patterns, snare placement, swing, density, syncopation, ghost notes, and fills.
 
 \---
 
