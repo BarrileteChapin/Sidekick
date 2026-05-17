@@ -187,7 +187,7 @@ export class AudiotoolSdkNexusClient implements NexusClient {
     if (!baseTrack?.player) {
       throw new Error('No source instrument note track was found. Create an instrument track in Audiotool first, then refresh Sidekick.');
     }
-    const basePlayer = baseTrack.player;
+    const basePlayer = toPointerLocation(baseTrack.player, `noteTrack:${baseTrack.id}:player`);
 
     const amount = Math.max(0, Math.min(8, Math.floor(count)));
     if (amount === 0) return 0;
@@ -248,14 +248,20 @@ export class AudiotoolSdkNexusClient implements NexusClient {
         transaction.update(device.fields.positionY, 300 + noteTracks.length * 80);
       }
 
+      const deviceLocation = toPointerLocation(device.location, `device:${request.name}`);
       const noteTrack = transaction.create('noteTrack', {
-        player: device.location,
+        player: deviceLocation,
         isEnabled: true,
         orderAmongTracks: maxOrder + 1
       });
       createdTrackId = noteTrack.id;
 
-      if ('audioOutput' in device.fields) {
+      const output = resolveDeviceAudioOutputLocation(device.fields as unknown as Record<string, unknown>);
+      if (output) {
+        console.info('[Sidekick] Wiring created device output socket.', {
+          trackName: request.name,
+          outputField: output.fieldName
+        });
         const existingChannelCount = transaction.entities.ofTypes('mixerChannel').get().length;
         const mixerChannel = transaction.create('mixerChannel', {
           displayParameters: {
@@ -263,9 +269,15 @@ export class AudiotoolSdkNexusClient implements NexusClient {
             orderAmongStrips: existingChannelCount + 1
           }
         });
+        const audioInput = toPointerLocation(mixerChannel.fields.audioInput.location, 'mixerChannel:audioInput');
         transaction.create('desktopAudioCable', {
-          fromSocket: (device.fields as unknown as { audioOutput: { location: NexusLocation } }).audioOutput.location,
-          toSocket: mixerChannel.fields.audioInput.location
+          fromSocket: output.location as unknown as NexusLocation,
+          toSocket: audioInput
+        });
+      } else {
+        console.warn('[Sidekick] No supported audio output socket found on created device; skipping desktopAudioCable creation.', {
+          trackName: request.name,
+          presetSlug
         });
       }
     });
@@ -424,20 +436,35 @@ function getDefaultRedirectUrl(): string {
 
 type NoteTrackTarget = {
   id: string;
-  location: NexusLocation;
-  player?: NexusLocation;
+  location: PointerLocation;
+  player?: PointerLocation;
   orderAmongTracks?: number;
+};
+
+type PointerLocation = {
+  entityId: string;
+  fieldIndex: number[];
 };
 
 type MidiInsertTransaction = Parameters<SyncedDocument['modify']>[0] extends (transaction: infer T) => unknown ? T : never;
 
 function getNoteTracks(document: SyncedDocument): NoteTrackTarget[] {
-  return document.queryEntities.ofTypes('noteTrack').get().map((track) => ({
-    id: track.id,
-    location: track.location,
-    player: track.fields.player.value,
-    orderAmongTracks: track.fields.orderAmongTracks.value
-  }));
+  return document.queryEntities.ofTypes('noteTrack').get()
+    .map((track): NoteTrackTarget | null => {
+      const location = normalizePointerLocation(track.location);
+      if (!location) {
+        console.warn('[Sidekick] Skipping noteTrack with invalid location pointer.', { trackId: track.id });
+        return null;
+      }
+
+      return {
+        id: track.id,
+        location,
+        player: normalizePointerLocation(track.fields.player.value),
+        orderAmongTracks: track.fields.orderAmongTracks.value
+      };
+    })
+    .filter((track): track is NoteTrackTarget => track !== null);
 }
 
 function insertGeneratedTrack(
@@ -451,9 +478,11 @@ function insertGeneratedTrack(
     Math.max(...generatedTrack.notes.map((note) => note.startBeat + note.durationBeats), midi.request.bars * 4)
   );
   const collection = transaction.create('noteCollection', {});
+  const collectionLocation = toPointerLocation(collection.location, 'noteCollection');
+  const noteTrackLocation = toPointerLocation(noteTrack.location, `noteTrack:${noteTrack.id}`);
   transaction.create('noteRegion', {
-    collection: collection.location,
-    track: noteTrack.location,
+    collection: collectionLocation,
+    track: noteTrackLocation,
     region: {
       positionTicks: beatsToTicks(startBeat),
       durationTicks: regionDurationTicks,
@@ -468,7 +497,7 @@ function insertGeneratedTrack(
 
   generatedTrack.notes.forEach((note) => {
     transaction.create('note', {
-      collection: collection.location,
+      collection: collectionLocation,
       positionTicks: beatsToTicks(note.startBeat),
       durationTicks: Math.max(1, beatsToTicks(note.durationBeats)),
       pitch: Math.max(0, Math.min(127, Math.round(note.pitch))),
@@ -496,10 +525,56 @@ function beatsToTicks(beats: number): number {
 /** Audiotool-native synthesizer device types that must be resolved via
  *  `presets.search()` rather than the GM-only `presets.getInstrument()`. */
 const AUDIOTOOL_DEVICE_TYPES = new Set(['heisenberg', 'pulverisateur', 'bassline', 'tonematrix', 'space', 'machiniste', 'beatbox8', 'beatbox9']);
+const DEVICE_AUDIO_OUTPUT_FIELDS = ['audioOutput', 'mainOutput', 'masterOutput'] as const;
 const PRESET_ID_PATTERN = /^(?:presets\/)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function isLocationLike(value: unknown): value is NexusLocation {
+function isLocationLike(value: unknown): value is { entityId: string } {
   return typeof value === 'object' && value !== null && 'entityId' in value && typeof (value as { entityId?: unknown }).entityId === 'string';
+}
+
+function normalizePointerLocation(location: unknown): PointerLocation | undefined {
+  if (typeof location !== 'object' || location === null) {
+    return undefined;
+  }
+
+  const value = location as { entityId?: unknown; fieldIndex?: unknown };
+  if (typeof value.entityId !== 'string' || value.entityId.length === 0) {
+    return undefined;
+  }
+
+  const fieldIndex = Array.isArray(value.fieldIndex)
+    ? value.fieldIndex.filter((entry): entry is number => Number.isInteger(entry))
+    : [];
+
+  return {
+    entityId: value.entityId,
+    fieldIndex
+  };
+}
+
+function toPointerLocation(location: unknown, context: string): NexusLocation {
+  const normalized = normalizePointerLocation(location);
+  if (!normalized) {
+    throw new Error(`Audiotool pointer "${context}" is missing or invalid.`);
+  }
+  return normalized as unknown as NexusLocation;
+}
+
+function resolveSocketLocation(field: unknown): PointerLocation | undefined {
+  if (typeof field !== 'object' || field === null || !('location' in field)) {
+    return undefined;
+  }
+  return normalizePointerLocation((field as { location?: unknown }).location);
+}
+
+function resolveDeviceAudioOutputLocation(fields: Record<string, unknown>): { fieldName: string; location: PointerLocation } | undefined {
+  for (const fieldName of DEVICE_AUDIO_OUTPUT_FIELDS) {
+    const location = resolveSocketLocation(fields[fieldName]);
+    if (location) {
+      return { fieldName, location };
+    }
+  }
+  return undefined;
 }
 
 function normalizePresetName(slug: string): string {
@@ -512,7 +587,11 @@ function normalizePresetName(slug: string): string {
 
 async function fetchPreset(client: AuthenticatedClient, slug: string) {
   if (PRESET_ID_PATTERN.test(slug)) {
-    return client.presets.get(slug);
+    const preset = await client.presets.get(slug);
+    if (!preset) {
+      throw new Error(`Preset "${slug}" could not be loaded. Check your Audiotool permissions and preset ID.`);
+    }
+    return preset;
   }
   if (AUDIOTOOL_DEVICE_TYPES.has(slug)) {
     const results = await client.presets.search(slug as never);
@@ -522,7 +601,11 @@ async function fetchPreset(client: AuthenticatedClient, slug: string) {
     }
     return preset;
   }
-  return client.presets.getInstrument(slug as never);
+  const preset = await client.presets.getInstrument(slug as never);
+  if (!preset) {
+    throw new Error(`Instrument preset "${slug}" could not be loaded.`);
+  }
+  return preset;
 }
 
 function chooseInstrumentSlug(request: SuggestedInstrumentRequest): string {
