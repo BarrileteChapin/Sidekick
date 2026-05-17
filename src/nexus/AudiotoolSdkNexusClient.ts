@@ -20,6 +20,7 @@ const PRESET_LOOKUP_TIMEOUT_MS = 10000;
 const WRITE_TRANSACTION_TIMEOUT_MS = 12000;
 const POST_WRITE_VERIFICATION_TIMEOUT_MS = 4000;
 const DOCUMENT_RECONNECT_TIMEOUT_MS = 4000;
+const DEFAULT_PIANO_INSTRUMENT_SLUG = 'acoustic-piano';
 
 export class AudiotoolSdkNexusClient implements NexusClient {
   private authResult: BrowserAuthResult | null = null;
@@ -267,71 +268,139 @@ export class AudiotoolSdkNexusClient implements NexusClient {
       const client = await this.getAuthenticatedClient();
       const document = await this.getWritableDocument('add instruments');
 
-      const presetSlug = request.audiotoolInstrumentSlug ?? chooseInstrumentSlug(request);
+      const requestedPresetSlug = normalizePresetName(request.audiotoolInstrumentSlug ?? chooseInstrumentSlug(request));
       console.log(
         `[Sidekick] Starting instrument creation for "${request.name}" (${request.role}) ` +
-        `using preset "${presetSlug}". Connected=${document.connected.getValue()}.`
+        `using preset "${requestedPresetSlug}". Connected=${document.connected.getValue()}.`
       );
-      const preset = await withTimeout(
-        fetchPreset(client, presetSlug),
+
+      type ResolvedPreset = Awaited<ReturnType<typeof fetchPreset>>;
+
+      const primaryPreset = await withTimeout(
+        fetchPreset(client, requestedPresetSlug),
         PRESET_LOOKUP_TIMEOUT_MS,
-        `Timed out while resolving Audiotool preset "${presetSlug}". The preset lookup never completed.`
+        `Timed out while resolving Audiotool preset "${requestedPresetSlug}". The preset lookup never completed.`
       );
-      console.log(`[Sidekick] Resolved preset "${presetSlug}". Submitting instrument creation transaction...`);
-      const presetName = normalizePresetName(presetSlug);
-      const noteTracks = getNoteTracks(document);
-      const maxOrder = Math.max(...noteTracks.map((track) => track.orderAmongTracks ?? 0), 0);
+      console.log(`[Sidekick] Resolved preset "${requestedPresetSlug}". Submitting instrument creation transaction...`);
+
+      let pianoFallbackPreset: ResolvedPreset | null = null;
+      if (requestedPresetSlug !== DEFAULT_PIANO_INSTRUMENT_SLUG) {
+        try {
+          pianoFallbackPreset = await withTimeout(
+            fetchPreset(client, DEFAULT_PIANO_INSTRUMENT_SLUG),
+            PRESET_LOOKUP_TIMEOUT_MS,
+            `Timed out while resolving fallback preset "${DEFAULT_PIANO_INSTRUMENT_SLUG}".`
+          );
+        } catch (error) {
+          console.warn(
+            `[Sidekick] Could not pre-load fallback preset "${DEFAULT_PIANO_INSTRUMENT_SLUG}". ` +
+            'A raw Gakki device will be used if preset application fails.',
+            error
+          );
+        }
+      }
+
       let createdTrackId = '';
+      let appliedPresetSlug = requestedPresetSlug;
 
-      await withTimeout(
-        document.modify((transaction) => {
-          const device = transaction.createDeviceFromPreset(preset);
-          if ('displayName' in device.fields) {
-            transaction.update(device.fields.displayName, request.name);
-          }
-          if ('presetName' in device.fields) {
-            transaction.update(device.fields.presetName, presetName);
-          }
-          if ('positionX' in device.fields) {
-            transaction.update(device.fields.positionX, 600 + noteTracks.length * 80);
-          }
-          if ('positionY' in device.fields) {
-            transaction.update(device.fields.positionY, 300 + noteTracks.length * 80);
-          }
-
-          const noteTrack = transaction.create('noteTrack', {
-            player: device.location,
-            isEnabled: true,
-            orderAmongTracks: maxOrder + 1
-          });
-          createdTrackId = noteTrack.id;
-
-          const outputSocket = resolveDeviceAudioOutputLocation(device.fields as Record<string, unknown>);
-          if (!outputSocket) {
-            console.warn(
-              `[Sidekick] Created instrument "${request.name}" (${presetSlug}) without a known audio output socket. ` +
-              'Its note lane exists, but no mixer cable was added.'
+      const createTrackWithPreset = async (preset: ResolvedPreset | null, presetSlugForName: string): Promise<void> => {
+        await withTimeout(
+          document.modify((transaction) => {
+            const existingNoteTracks = transaction.entities.ofTypes('noteTrack').get();
+            const maxOrder = Math.max(
+              ...existingNoteTracks.map((track) => {
+                const order = track.fields.orderAmongTracks.value;
+                return typeof order === 'number' ? order : 0;
+              }),
+              0
             );
-            return;
-          }
 
-          const existingChannelCount = transaction.entities.ofTypes('mixerChannel').get().length;
-          const mixerChannel = transaction.create('mixerChannel', {
-            displayParameters: {
-              displayName: request.name,
-              orderAmongStrips: existingChannelCount + 1
+            const device = preset ? transaction.createDeviceFromPreset(preset) : transaction.create('gakki', {});
+            const playerLocation = normalizeLocation(device.location) ?? device.location;
+
+            if ('displayName' in device.fields) {
+              transaction.update(device.fields.displayName, request.name);
             }
-          });
+            if ('presetName' in device.fields) {
+              transaction.update(device.fields.presetName, normalizePresetName(presetSlugForName));
+            }
+            if ('positionX' in device.fields) {
+              transaction.update(device.fields.positionX, 600 + existingNoteTracks.length * 80);
+            }
+            if ('positionY' in device.fields) {
+              transaction.update(device.fields.positionY, 300 + existingNoteTracks.length * 80);
+            }
 
-          transaction.create('desktopAudioCable', {
-            fromSocket: outputSocket.location,
-            toSocket: mixerChannel.fields.audioInput.location
-          });
-        }),
-        WRITE_TRANSACTION_TIMEOUT_MS,
-        `Timed out while creating the Audiotool instrument track "${request.name}". ` +
-        'The synced document is not accepting the track/mixer creation transaction.'
-      );
+            const noteTrack = transaction.create('noteTrack', {
+              player: playerLocation,
+              isEnabled: true,
+              orderAmongTracks: maxOrder + 1
+            });
+            createdTrackId = noteTrack.id;
+
+            const outputSocket = resolveDeviceAudioOutputLocation(device.fields as Record<string, unknown>);
+            if (!outputSocket) {
+              console.warn(
+                `[Sidekick] Created instrument "${request.name}" (${presetSlugForName}) without a known audio output socket. ` +
+                'Its note lane exists, but no mixer cable was added.'
+              );
+              return;
+            }
+
+            const existingChannelCount = transaction.entities.ofTypes('mixerChannel').get().length;
+            const mixerChannel = transaction.create('mixerChannel', {
+              displayParameters: {
+                displayName: request.name,
+                orderAmongStrips: existingChannelCount + 1
+              }
+            });
+
+            transaction.create('desktopAudioCable', {
+              fromSocket: normalizeLocation(outputSocket.location) ?? outputSocket.location,
+              toSocket: normalizeLocation(mixerChannel.fields.audioInput.location) ?? mixerChannel.fields.audioInput.location
+            });
+          }),
+          WRITE_TRANSACTION_TIMEOUT_MS,
+          `Timed out while creating the Audiotool instrument track "${request.name}". ` +
+          'The synced document is not accepting the track/mixer creation transaction.'
+        );
+      };
+
+      try {
+        await createTrackWithPreset(primaryPreset, requestedPresetSlug);
+      } catch (error) {
+        if (!isFieldIndexSliceError(error) || requestedPresetSlug === DEFAULT_PIANO_INSTRUMENT_SLUG) {
+          throw error;
+        }
+
+        console.warn(
+          `[Sidekick] Preset "${requestedPresetSlug}" failed with a pointer serialization error. ` +
+          `Retrying with default piano preset "${DEFAULT_PIANO_INSTRUMENT_SLUG}".`,
+          error
+        );
+
+        if (pianoFallbackPreset) {
+          try {
+            await createTrackWithPreset(pianoFallbackPreset, DEFAULT_PIANO_INSTRUMENT_SLUG);
+            appliedPresetSlug = DEFAULT_PIANO_INSTRUMENT_SLUG;
+          } catch (fallbackError) {
+            if (!isFieldIndexSliceError(fallbackError)) {
+              throw fallbackError;
+            }
+
+            console.warn(
+              `[Sidekick] Default piano preset also failed with pointer serialization issues. ` +
+              'Retrying with a raw Gakki device.',
+              fallbackError
+            );
+            await createTrackWithPreset(null, DEFAULT_PIANO_INSTRUMENT_SLUG);
+            appliedPresetSlug = DEFAULT_PIANO_INSTRUMENT_SLUG;
+          }
+        } else {
+          await createTrackWithPreset(null, DEFAULT_PIANO_INSTRUMENT_SLUG);
+          appliedPresetSlug = DEFAULT_PIANO_INSTRUMENT_SLUG;
+        }
+      }
 
       console.log(
         `[Sidekick] Instrument creation transaction submitted for "${request.name}" as track "${createdTrackId}". ` +
@@ -351,7 +420,7 @@ export class AudiotoolSdkNexusClient implements NexusClient {
         role: request.role,
         hasMidi: true,
         hasAudio: false,
-        instrumentName: presetSlug,
+        instrumentName: appliedPresetSlug,
         clipCount: 0,
         tags: ['noteTrack', 'sidekick-created', ...request.tags]
       };
@@ -706,6 +775,13 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => globalThis.setTimeout(resolve, ms));
 }
 
+function isFieldIndexSliceError(error: unknown): boolean {
+  const message = typeof error === 'object' && error !== null && 'message' in error
+    ? String((error as { message?: unknown }).message ?? '')
+    : '';
+  return message.includes("reading 'slice'") || message.includes('reading "slice"');
+}
+
 function waitForDocumentConnected(document: SyncedDocument, timeoutMs: number): Promise<boolean> {
   if (document.connected.getValue()) {
     return Promise.resolve(true);
@@ -825,5 +901,5 @@ function chooseInstrumentSlug(request: SuggestedInstrumentRequest): string {
   if (/drum|beat|kick|snare|hat|perc/.test(text)) return 'machiniste';
   if (/bass|sub|808|bassline/.test(text)) return request.role === 'bass' ? 'bassline' : 'pulverisateur';
   if (/pad|airy|chord|harmony|piano|organ|keys/.test(text)) return 'pulverisateur';
-  return 'heisenberg';
+  return DEFAULT_PIANO_INSTRUMENT_SLUG;
 }
