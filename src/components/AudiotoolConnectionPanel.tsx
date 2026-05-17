@@ -62,6 +62,11 @@ export function AudiotoolConnectionPanel({
     return (
       <>
         {includeMessage ? <p>{connectionState.message}</p> : null}
+        {connectionState.clientId ? (
+          <p className="mono">
+            Active client ID: <strong>{connectionState.clientId}</strong>
+          </p>
+        ) : null}
         {connectionState.redirectUrl ? (
           <p className="mono">
             OAuth redirect: <strong>{connectionState.redirectUrl}</strong>
@@ -104,6 +109,27 @@ export function AudiotoolConnectionPanel({
                 </button>
               ) : null}
             </div>
+            <details className="connection-details">
+              <summary>Use a different Audiotool client ID</summary>
+              <div className="stack">
+                <p className="subtle">
+                  If local/dev writes work but this deployed build does not, paste the same Audiotool developer app client ID here and log in again.
+                </p>
+                <div className="field">
+                  <label htmlFor="audiotool-client-id-override">Audiotool client ID override</label>
+                  <textarea
+                    id="audiotool-client-id-override"
+                    rows={2}
+                    placeholder="Paste your working Audiotool developer app client ID"
+                    value={clientId}
+                    onChange={(event) => setClientId(event.target.value)}
+                  />
+                </div>
+                <button className="button secondary" type="button" disabled={isWorking || !clientId.trim()} onClick={() => onUseClientId(clientId.trim())}>
+                  Switch client ID
+                </button>
+              </div>
+            </details>
           </div>
         ) : null}
       </>

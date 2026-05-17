@@ -41,6 +41,7 @@ export class AudiotoolSdkNexusClient implements NexusClient {
       mode: 'audiotool-sdk',
       authenticated,
       connected: Boolean(this.document && syncConnected),
+      clientId: this.clientId,
       userName: authResult?.status === 'authenticated' ? authResult.userName : undefined,
       projectUrl: this.projectUrl ?? undefined,
       redirectUrl: this.redirectUrl,

@@ -5,6 +5,7 @@ export interface NexusConnectionState {
   mode: 'mock' | 'host' | 'audiotool-sdk';
   authenticated: boolean;
   connected: boolean;
+  clientId?: string;
   userName?: string;
   projectUrl?: string;
   redirectUrl?: string;

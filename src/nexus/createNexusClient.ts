@@ -23,6 +23,9 @@ export interface NexusRuntimeOptions {
   audiotoolRedirectUrl?: string;
 }
 
+const legacyStoredClientIdKey = 'sidekick:audiotool-client-id';
+const clientIdOverrideKey = 'sidekick:audiotool-client-id-override';
+
 export function createNexusRuntime(options: NexusRuntimeOptions = {}): NexusRuntime {
   const mode = options.mode ?? getConfiguredMode();
   const hostNexus = getHostNexus();
@@ -37,7 +40,10 @@ export function createNexusRuntime(options: NexusRuntimeOptions = {}): NexusRunt
 
   const clientId = resolveClientId(options.audiotoolClientId);
   if (mode !== 'mock' && typeof clientId === 'string' && clientId.length > 0) {
-    storeClientId(clientId);
+    const explicitClientId = options.audiotoolClientId?.trim();
+    if (explicitClientId) {
+      storeClientIdOverride(explicitClientId);
+    }
     return {
       client: new AudiotoolSdkNexusClient(clientId, getRedirectUrl(options.audiotoolRedirectUrl)),
       mode: 'real',
@@ -59,10 +65,13 @@ function resolveClientId(optionClientId: string | undefined): string | null {
   const explicitClientId = optionClientId?.trim();
   if (explicitClientId) return explicitClientId;
 
+  const overrideClientId = getStoredClientIdOverride();
+  if (overrideClientId) return overrideClientId;
+
   const configuredClientId = import.meta.env.VITE_AUDIOTOOL_CLIENT_ID?.trim();
   if (configuredClientId) return configuredClientId;
 
-  return getStoredClientId();
+  return getLegacyStoredClientId();
 }
 
 function getConfiguredMode(): NexusRuntimeMode {
@@ -79,15 +88,21 @@ function getHostNexus(): AudiotoolNexusLike | null {
   return hostWindow.audiotoolNexus ?? hostWindow.nexus ?? hostWindow.NEXUS ?? null;
 }
 
-function getStoredClientId(): string | null {
+function getLegacyStoredClientId(): string | null {
   if (typeof localStorage === 'undefined') return null;
-  const value = localStorage.getItem('sidekick:audiotool-client-id');
+  const value = localStorage.getItem(legacyStoredClientIdKey);
   return value?.trim() || null;
 }
 
-function storeClientId(clientId: string): void {
+function getStoredClientIdOverride(): string | null {
+  if (typeof localStorage === 'undefined') return null;
+  const value = localStorage.getItem(clientIdOverrideKey);
+  return value?.trim() || null;
+}
+
+function storeClientIdOverride(clientId: string): void {
   if (typeof localStorage === 'undefined') return;
-  localStorage.setItem('sidekick:audiotool-client-id', clientId);
+  localStorage.setItem(clientIdOverrideKey, clientId);
 }
 
 function getRedirectUrl(optionRedirectUrl: string | undefined): string {
