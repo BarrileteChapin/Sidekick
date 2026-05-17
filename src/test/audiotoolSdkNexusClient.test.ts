@@ -24,12 +24,15 @@ describe('Audiotool SDK audio routing', () => {
     });
   });
 
-  it('rejects socket locations that only expose an entity id', () => {
+  it('normalizes socket locations that only expose an entity id', () => {
     expect(resolveDeviceAudioOutputLocation({
       audioOutput: {
         location: { entityId: 'device-1' }
       }
-    })).toBeUndefined();
+    })).toEqual({
+      fieldName: 'audioOutput',
+      location: { entityId: 'device-1', fieldIndex: [] }
+    });
   });
 
   it('returns undefined when the preset exposes no known output socket', () => {

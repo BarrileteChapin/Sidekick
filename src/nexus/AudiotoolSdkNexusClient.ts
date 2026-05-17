@@ -282,15 +282,10 @@ export class AudiotoolSdkNexusClient implements NexusClient {
       const noteTracks = getNoteTracks(document);
       const maxOrder = Math.max(...noteTracks.map((track) => track.orderAmongTracks ?? 0), 0);
       let createdTrackId = '';
-      let createdDeviceId = '';
-      let createdDeviceType = '';
-      let audioSocketField: string | undefined;
 
       await withTimeout(
         document.modify((transaction) => {
           const device = transaction.createDeviceFromPreset(preset);
-          createdDeviceId = device.id;
-          createdDeviceType = device.entityType;
           if ('displayName' in device.fields) {
             transaction.update(device.fields.displayName, request.name);
           }
@@ -311,23 +306,37 @@ export class AudiotoolSdkNexusClient implements NexusClient {
           });
           createdTrackId = noteTrack.id;
 
-          audioSocketField = resolveDeviceAudioOutputFieldName(device.fields as Record<string, unknown>);
+          const outputSocket = resolveDeviceAudioOutputLocation(device.fields as Record<string, unknown>);
+          if (!outputSocket) {
+            console.warn(
+              `[Sidekick] Created instrument "${request.name}" (${presetSlug}) without a known audio output socket. ` +
+              'Its note lane exists, but no mixer cable was added.'
+            );
+            return;
+          }
+
+          const existingChannelCount = transaction.entities.ofTypes('mixerChannel').get().length;
+          const mixerChannel = transaction.create('mixerChannel', {
+            displayParameters: {
+              displayName: request.name,
+              orderAmongStrips: existingChannelCount + 1
+            }
+          });
+
+          transaction.create('desktopAudioCable', {
+            fromSocket: outputSocket.location,
+            toSocket: mixerChannel.fields.audioInput.location
+          });
         }),
         WRITE_TRANSACTION_TIMEOUT_MS,
         `Timed out while creating the Audiotool instrument track "${request.name}". ` +
-        'The synced document is not accepting the core track-creation transaction.'
+        'The synced document is not accepting the track/mixer creation transaction.'
       );
 
       console.log(
         `[Sidekick] Instrument creation transaction submitted for "${request.name}" as track "${createdTrackId}". ` +
         'Verifying sync...'
       );
-      if (!audioSocketField) {
-        console.warn(
-          `[Sidekick] Created instrument "${request.name}" (${presetSlug}) without a known audio output socket. ` +
-          'Its note lane exists, but no mixer cable was added.'
-        );
-      }
 
       await withTimeout(
         verifyCreatedNoteTracksAfterSync(document, new Set([createdTrackId])),
@@ -335,20 +344,6 @@ export class AudiotoolSdkNexusClient implements NexusClient {
         `Timed out while confirming the new Audiotool instrument track "${request.name}" after the transaction was sent.`
       );
       console.log(`[Sidekick] Confirmed created instrument track "${createdTrackId}".`);
-
-      if (audioSocketField && createdDeviceId && createdDeviceType) {
-        await connectCreatedInstrumentToMixer(document, {
-          deviceId: createdDeviceId,
-          deviceEntityType: createdDeviceType,
-          outputFieldName: audioSocketField,
-          trackName: request.name
-        });
-      } else {
-        console.warn(
-          `[Sidekick] Created instrument "${request.name}" (${presetSlug}) without a known audio output socket. ` +
-          'Its note lane exists, but no mixer cable was added.'
-        );
-      }
 
       return {
         id: createdTrackId,
@@ -453,8 +448,9 @@ function mapTimelineTracks(entities: NexusEntityLike[]): SessionTrack[] {
 
 function getPlayerEntity(entity: NexusEntityLike, entities: NexusEntityLike[]): NexusEntityLike | undefined {
   const player = readFieldValue(entity, 'player');
-  if (!isLocationLike(player)) return undefined;
-  return entities.find((candidate) => candidate.id === player.entityId);
+  const normalizedPlayer = normalizeLocation(player);
+  if (!normalizedPlayer) return undefined;
+  return entities.find((candidate) => candidate.id === normalizedPlayer.entityId);
 }
 
 function inferRoleFromEntity(entity: NexusEntityLike, playerEntity?: NexusEntityLike): TrackRole {
@@ -567,12 +563,23 @@ type InsertedRegionSummary = {
 };
 
 function getNoteTracks(document: SyncedDocument): NoteTrackTarget[] {
-  return document.queryEntities.ofTypes('noteTrack').get().map((track) => ({
-    id: track.id,
-    location: track.location,
-    player: track.fields.player.value,
-    orderAmongTracks: track.fields.orderAmongTracks.value
-  }));
+  return document.queryEntities.ofTypes('noteTrack').get().flatMap((track) => {
+    const location = normalizeLocation(track.location);
+    if (!location) {
+      console.warn(`[Sidekick] Ignoring note track "${track.id}" because its location payload is invalid.`);
+      return [];
+    }
+
+    const player = normalizeLocation(track.fields.player.value);
+    const orderAmongTracks = track.fields.orderAmongTracks.value;
+
+    return [{
+      id: track.id,
+      location,
+      player,
+      orderAmongTracks: typeof orderAmongTracks === 'number' ? orderAmongTracks : undefined
+    }];
+  });
 }
 
 function insertGeneratedTrack(
@@ -690,77 +697,13 @@ function countInsertedRegions(document: SyncedDocument, insertedRegionIds: Reado
 
 function countInsertedNotes(document: SyncedDocument, collectionIds: ReadonlySet<string>): number {
   return document.queryEntities.ofTypes('note').get().filter((note) => {
-    const collection = note.fields.collection.value;
-    return isLocationLike(collection) && collectionIds.has(collection.entityId);
+    const collection = normalizeLocation(note.fields.collection.value);
+    return Boolean(collection && collectionIds.has(collection.entityId));
   }).length;
 }
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => globalThis.setTimeout(resolve, ms));
-}
-
-async function connectCreatedInstrumentToMixer(
-  document: SyncedDocument,
-  options: { deviceId: string; deviceEntityType: string; outputFieldName: string; trackName: string }
-): Promise<void> {
-  const { deviceId, deviceEntityType, outputFieldName, trackName } = options;
-  const deviceEntity = document.queryEntities.get().find((entity) => entity.id === deviceId) as NexusEntityLike | undefined;
-  const outputSocket = deviceEntity
-    ? resolveDeviceAudioOutputLocation(deviceEntity.fields as Record<string, unknown>)
-    : undefined;
-
-  if (!outputSocket) {
-    console.warn(
-      `[Sidekick] Could not resolve a committed audio output socket for created instrument "${trackName}" (${deviceEntityType}). ` +
-      'Skipping automatic mixer wiring.'
-    );
-    return;
-  }
-
-  console.log(
-    `[Sidekick] Connecting created instrument "${trackName}" to mixer via ${deviceEntityType}.${outputFieldName}.`
-  );
-
-  try {
-    let wiringError: unknown;
-    await withTimeout(
-      document.modify((transaction) => {
-        try {
-          const existingChannelCount = transaction.entities.ofTypes('mixerChannel').get().length;
-          const mixerChannel = transaction.create('mixerChannel', {
-            displayParameters: {
-              displayName: trackName,
-              orderAmongStrips: existingChannelCount + 1
-            }
-          });
-
-          transaction.create('desktopAudioCable', {
-            fromSocket: outputSocket.location,
-            toSocket: mixerChannel.fields.audioInput.location
-          });
-        } catch (error) {
-          wiringError = error;
-        }
-      }),
-      WRITE_TRANSACTION_TIMEOUT_MS,
-      `Timed out while connecting the created instrument "${trackName}" to the Audiotool mixer.`
-    );
-    if (wiringError) {
-      console.warn(
-        `[Sidekick] Mixer wiring failed for created instrument "${trackName}". ` +
-        'The note track was created, but its audio was not connected automatically.',
-        wiringError
-      );
-      return;
-    }
-    console.log(`[Sidekick] Connected created instrument "${trackName}" to a mixer channel.`);
-  } catch (error) {
-    console.warn(
-      `[Sidekick] Mixer wiring failed for created instrument "${trackName}". ` +
-      'The note track was created, but its audio was not connected automatically.',
-      error
-    );
-  }
 }
 
 function waitForDocumentConnected(document: SyncedDocument, timeoutMs: number): Promise<boolean> {
@@ -813,17 +756,14 @@ function beatsToTicks(beats: number): number {
   return Math.round(beats * Ticks.Beat);
 }
 
-function resolveDeviceAudioOutputFieldName(fields: Record<string, unknown>): string | undefined {
-  return DEVICE_AUDIO_OUTPUT_FIELDS.find((fieldName) => fieldName in fields);
-}
-
 export function resolveDeviceAudioOutputLocation(fields: Record<string, unknown>): { fieldName: string; location: NexusLocation } | undefined {
   for (const fieldName of DEVICE_AUDIO_OUTPUT_FIELDS) {
     const field = fields[fieldName];
-    if (hasSocketLocation(field)) {
+    const location = resolveSocketLocation(field);
+    if (location) {
       return {
         fieldName,
-        location: field.location
+        location
       };
     }
   }
@@ -835,18 +775,26 @@ export function resolveDeviceAudioOutputLocation(fields: Record<string, unknown>
 const AUDIOTOOL_DEVICE_TYPES = new Set(['heisenberg', 'pulverisateur', 'bassline', 'tonematrix', 'space', 'machiniste', 'beatbox8', 'beatbox9']);
 const PRESET_ID_PATTERN = /^(?:presets\/)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function isLocationLike(value: unknown): value is NexusLocation {
-  return typeof value === 'object'
-    && value !== null
-    && 'entityId' in value
-    && typeof (value as { entityId?: unknown }).entityId === 'string'
-    && 'fieldIndex' in value
-    && Array.isArray((value as { fieldIndex?: unknown }).fieldIndex)
-    && (value as { fieldIndex: unknown[] }).fieldIndex.every((entry) => typeof entry === 'number');
+function normalizeLocation(value: unknown): NexusLocation | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const location = value as { entityId?: unknown; fieldIndex?: unknown };
+  if (typeof location.entityId !== 'string' || location.entityId.length === 0) return undefined;
+
+  if (!Array.isArray(location.fieldIndex)) {
+    location.fieldIndex = [];
+  } else {
+    location.fieldIndex = location.fieldIndex.filter((entry): entry is number => typeof entry === 'number');
+  }
+
+  return value as NexusLocation;
 }
 
-function hasSocketLocation(value: unknown): value is { location: NexusLocation } {
-  return typeof value === 'object' && value !== null && 'location' in value && isLocationLike((value as { location?: unknown }).location);
+function resolveSocketLocation(value: unknown): NexusLocation | undefined {
+  return typeof value === 'object'
+    && value !== null
+    && 'location' in value
+    ? normalizeLocation((value as { location?: unknown }).location)
+    : undefined;
 }
 
 function normalizePresetName(slug: string): string {
