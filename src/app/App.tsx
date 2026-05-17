@@ -256,20 +256,26 @@ export function App() {
         for (const track of activeTracks) {
           const expectedInstrumentSlug = style.instruments?.[track.role];
           let target = findCompatibleNoteTrack(availableTracks, track.role, expectedInstrumentSlug, usedTrackIds);
-          if (!target && services.nexus.createSuggestedInstrument) {
-            setStatus(`Creating ${track.role} instrument track for insertion...`);
-            const created = await services.nexus.createSuggestedInstrument({
-              name: track.name,
-              role: track.role,
-              tags: [track.role],
-              audiotoolInstrumentSlug: style.instruments?.[track.role]
-            });
-            availableTracks.push(created);
-            target = created;
-            createdCount += 1;
-          }
           if (!target) {
             target = availableTracks.find((candidate) => !usedTrackIds.has(candidate.id));
+          }
+          if (!target && services.nexus.createSuggestedInstrument) {
+            try {
+              setStatus(`Creating ${track.role} instrument track for insertion...`);
+              const created = await services.nexus.createSuggestedInstrument({
+                name: track.name,
+                role: track.role,
+                tags: [track.role],
+                audiotoolInstrumentSlug: expectedInstrumentSlug
+              });
+              availableTracks.push(created);
+              target = created;
+              createdCount += 1;
+            } catch (error) {
+              console.warn('[Sidekick] createSuggestedInstrument failed during insert fallback.', error);
+              addAction(`Could not auto-create ${track.role} lane; reusing existing note lanes.`);
+              target = availableTracks.find((candidate) => !usedTrackIds.has(candidate.id));
+            }
           }
           if (!target) {
             throw new Error('No compatible Audiotool note lane available for insertion.');
