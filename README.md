@@ -5,7 +5,7 @@
 It helps producers move from a blank project to a workable musical idea by combining two complementary workflows:
 
 1. **Generate inspiration** — create MIDI-based melody, chord, and bass ideas using a rule-based engine.
-2. **Learn from references** — upload a reference song, analyze its musical characteristics with an LLM-powered assistant, and translate those insights into actions inside an Audiotool project.
+2. **Learn from references** — upload a reference song, analyze its musical characteristics with an LLM-powered (Gemini 3.1 Flash) assistant, and translate those insights into actions inside an Audiotool project.
 
 Sidekick is designed as a creative assistant, not an autopilot. It gives you musical starting points, explains production ideas, and helps shape them into your own track.
 
@@ -383,7 +383,7 @@ Possible future directions:
 
 ## Credits
 
-Sidekick was developed as a music production assistant for Audiotool by Hemanth \& Carlos during the 2026 Lisbon Music Hackspace Hackathon.
+Sidekick was developed as a music production assistant for Audiotool by Hemanth & Carlos during the 2026 Lisbon Music Hackspace Hackathon.
 
 \---
 
