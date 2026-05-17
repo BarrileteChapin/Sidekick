@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { SessionAnalyzer, type SessionAnalysis } from '../analysis/sessionAnalyzer';
 import type { ChatGenerationPlan } from '../chat/schemas';
-import { createDefaultProfile, type SessionTrack, type UserProfile } from '../core/types';
+import { createDefaultProfile, type SessionTrack, type TrackRole, type UserProfile } from '../core/types';
 import { loadProfile } from '../core/profileStore';
 import type { GeneratedMidi } from '../generation/types';
 import { ChatPanel, type ChatDraft } from '../components/ChatPanel';
@@ -137,7 +137,7 @@ export function App() {
             name: action.name,
             role: action.role,
             tags: [action.role],
-            audiotoolInstrumentSlug: action.instrumentSlug ?? profileInstrumentSlug
+            audiotoolInstrumentSlug: action.instrumentSlug ?? sanitizeAutoCreateInstrumentSlug(profileInstrumentSlug)
           });
           if (track) {
             createdTracks.push(track);
@@ -239,20 +239,20 @@ export function App() {
         for (const track of activeTracks) {
           const expectedInstrumentSlug = style.instruments?.[track.role];
           let target = findCompatibleNoteTrack(availableTracks, track.role, expectedInstrumentSlug, usedTrackIds);
+          if (!target) {
+            target = availableTracks.find((candidate) => !usedTrackIds.has(candidate.id));
+          }
           if (!target && services.nexus.createSuggestedInstrument) {
             setStatus(`Creating ${track.role} instrument track for insertion...`);
             const created = await services.nexus.createSuggestedInstrument({
               name: track.name,
               role: track.role,
               tags: [track.role],
-              audiotoolInstrumentSlug: style.instruments?.[track.role]
+              audiotoolInstrumentSlug: sanitizeAutoCreateInstrumentSlug(style.instruments?.[track.role])
             });
             availableTracks.push(created);
             target = created;
             createdCount += 1;
-          }
-          if (!target) {
-            target = availableTracks.find((candidate) => !usedTrackIds.has(candidate.id));
           }
           if (!target) {
             throw new Error('No compatible Audiotool note lane available for insertion.');
@@ -262,7 +262,7 @@ export function App() {
         }
 
         if (createdCount > 0) {
-          addAction(`Created ${createdCount} style-matched instrument track${createdCount === 1 ? '' : 's'} before insertion.`);
+          addAction(`Created ${createdCount} insertion instrument track${createdCount === 1 ? '' : 's'} before insertion.`);
         }
         insertOptions.targetTrackIds = distributedTargets;
       }
@@ -299,7 +299,7 @@ export function App() {
         return;
       }
 
-      setStatus(`Creating up to ${count} style-matched instrument track${count === 1 ? '' : 's'}...`);
+      setStatus(`Creating up to ${count} insertion instrument track${count === 1 ? '' : 's'}...`);
       const availableTracks: SessionTrack[] = [...noteTracks];
       const reservedTrackIds = new Set<string>();
 
@@ -316,7 +316,7 @@ export function App() {
           name: track.name,
           role: track.role,
           tags: [track.role],
-          audiotoolInstrumentSlug: style.instruments?.[track.role]
+          audiotoolInstrumentSlug: sanitizeAutoCreateInstrumentSlug(style.instruments?.[track.role])
         });
         if (result) {
           created += 1;
@@ -324,7 +324,7 @@ export function App() {
           availableTracks.push(result);
         }
       }
-      addAction(`Created ${created} ${style.name} instrument track${created === 1 ? '' : 's'}.`);
+      addAction(`Created ${created} insertion instrument track${created === 1 ? '' : 's'}.`);
       await refreshSession();
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Could not create instrument tracks.');
@@ -337,6 +337,7 @@ export function App() {
 
   const selectedStyle = services.styles.getById(generationState.styleProfileId);
   const chatStyle = services.styles.getById(analysis?.session.styleProfileId ?? selectedStyle.id);
+  const insertionStyleInstruments = sanitizeAutoCreateInstrumentMap(selectedStyle.instruments);
   const noteTracks = analysis?.session.tracks.filter((track) => track.tags?.includes('noteTrack')) ?? [];
   const projectInstrumentNames = analysis?.session.tracks.map((track) => track.instrumentName).filter((name): name is string => Boolean(name)) ?? [];
 
@@ -469,7 +470,7 @@ export function App() {
                       midi={generatedMidi}
                       canInsert={Boolean(services.nexus.insertMidi) && !isInserting}
                       noteTracks={noteTracks}
-                      styleInstruments={selectedStyle.instruments}
+                      styleInstruments={insertionStyleInstruments}
                       canAutoCreateInstruments={Boolean(services.nexus.createSuggestedInstrument)}
                       onPreview={() => void handlePreview()}
                       onInsert={(options) => void handleInsert(options)}
@@ -558,4 +559,24 @@ function createActionLogEntry(message: string): ActionLogEntry {
     id: crypto.randomUUID(),
     message
   };
+}
+
+const PRESET_REFERENCE_PATTERN = /^(?:presets\/)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function sanitizeAutoCreateInstrumentSlug(instrumentSlug: string | undefined): string | undefined {
+  const trimmed = instrumentSlug?.trim();
+  if (!trimmed) return undefined;
+  return trimmed.toLowerCase().startsWith('presets/') || PRESET_REFERENCE_PATTERN.test(trimmed) ? undefined : trimmed;
+}
+
+function sanitizeAutoCreateInstrumentMap(
+  instruments: Partial<Record<TrackRole, string>> | undefined
+): Partial<Record<TrackRole, string>> | undefined {
+  if (!instruments) return undefined;
+
+  const entries = Object.entries(instruments)
+    .map(([role, slug]) => [role, sanitizeAutoCreateInstrumentSlug(slug)])
+    .filter((entry): entry is [string, string] => Boolean(entry[1]));
+
+  return entries.length > 0 ? Object.fromEntries(entries) as Partial<Record<TrackRole, string>> : undefined;
 }

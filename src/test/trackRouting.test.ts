@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { findCompatibleNoteTrack } from '../app/trackRouting';
+import { findCompatibleNoteTrack, planDistributedMidiInsertion } from '../app/trackRouting';
 import type { SessionTrack } from '../core/types';
 
 const tracks: SessionTrack[] = [
@@ -43,5 +43,23 @@ describe('track routing', () => {
       }
     ];
     expect(findCompatibleNoteTrack(mixed, 'bass', 'presets/shared-preset')).toBeUndefined();
+  });
+
+  it('reuses an unused existing lane before promising a new instrument track', () => {
+    const preview = planDistributedMidiInsertion({
+      generatedTracks: [
+        { role: 'lead', name: 'Lead' },
+        { role: 'bass', name: 'Bass' }
+      ],
+      noteTracks: [
+        { id: 'lead-1', name: 'Lead', role: 'lead', hasMidi: true, hasAudio: false, tags: ['noteTrack'] },
+        { id: 'other-1', name: 'Spare Lane', role: 'other', hasMidi: true, hasAudio: false, tags: ['noteTrack'] }
+      ],
+      instruments: { lead: 'presets/lead-a', bass: 'presets/bass-a' },
+      canAutoCreateInstruments: true
+    });
+
+    expect(preview[0]?.summary).toContain('Use existing: Lead');
+    expect(preview[1]?.summary).toContain('Use existing: Spare Lane');
   });
 });

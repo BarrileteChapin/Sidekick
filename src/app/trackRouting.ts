@@ -47,8 +47,8 @@ export function planDistributedMidiInsertion(options: {
     const expectedInstrumentSlug = options.instruments?.[track.role];
     let target = findCompatibleNoteTrack(options.noteTracks, track.role, expectedInstrumentSlug, usedTrackIds);
 
-    // App.tsx fallback logic: if it can't create one and hasn't found one, it grabs the first available lane.
-    if (!target && !options.canAutoCreateInstruments) {
+    // Prefer reusing an unused existing lane before provisioning a new instrument.
+    if (!target) {
       target = options.noteTracks.find((candidate) => !usedTrackIds.has(candidate.id));
     }
 
