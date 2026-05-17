@@ -245,13 +245,38 @@ export function App() {
 
   async function handleInsert(options: MidiInsertOptions) {
     if (!generatedMidi) return;
-    if (insertInFlightRef.current) return;
+    if (insertInFlightRef.current) {
+      const message = 'Insert already in progress. Wait for the current Audiotool write to finish.';
+      console.warn('[Sidekick] Ignored duplicate insert click.');
+      setStatus(message);
+      addAction(message);
+      return;
+    }
+    if (services.nexusMode === 'real' && !connectionState?.connected) {
+      const message = connectionState?.projectUrl
+        ? 'Audiotool project sync is offline. Re-sync the project and wait for Project synced before inserting.'
+        : 'Sync an Audiotool project before inserting MIDI.';
+      console.warn('[Sidekick] Blocked insert because the Audiotool document is not connected.', {
+        projectUrl: connectionState?.projectUrl,
+        connected: connectionState?.connected
+      });
+      setStatus(message);
+      addAction(message);
+      return;
+    }
+    console.log('[Sidekick] Insert requested.', {
+      trackMode: options.trackMode ?? 'distribute',
+      startBeat: options.startBeat ?? 0,
+      connected: connectionState?.connected ?? null,
+      noteTrackCount: noteTracks.length
+    });
     insertInFlightRef.current = true;
     setIsInserting(true);
     try {
       const activeTracks = generatedMidi.tracks.filter((t) => t.notes.length > 0);
       if (activeTracks.length === 0) {
         setStatus('Nothing to insert: generated MIDI has no notes.');
+        addAction('Insert canceled because the generated MIDI contained no notes.');
         return;
       }
 
@@ -271,6 +296,12 @@ export function App() {
           }
           if (!target && services.nexus.createSuggestedInstrument) {
             setStatus(`Creating ${track.role} instrument track for insertion...`);
+            addAction(`Creating ${track.role} instrument track for insertion...`);
+            console.log('[Sidekick] Creating insertion instrument.', {
+              generatedTrack: track.name,
+              role: track.role,
+              expectedInstrumentSlug: sanitizeAutoCreateInstrumentSlug(style.instruments?.[track.role]) ?? null
+            });
             const created = await services.nexus.createSuggestedInstrument({
               name: track.name,
               role: track.role,
@@ -295,6 +326,7 @@ export function App() {
       }
 
       setStatus('Inserting generated MIDI into Audiotool...');
+      addAction(`Submitting ${generatedMidi.name} to Audiotool at bar ${Math.floor((insertOptions.startBeat ?? 0) / 4) + 1}, beat ${((insertOptions.startBeat ?? 0) % 4) + 1}.`);
       const insertMidi = services.nexus.insertMidi;
       if (!insertMidi) {
         throw new Error('This connection does not support MIDI insertion. Refresh Sidekick and re-sync your project.');
@@ -305,8 +337,12 @@ export function App() {
       setStatus('Inserted generated MIDI into Audiotool. Refreshing session...');
       await refreshSession();
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : 'Insert failed.');
+      const message = error instanceof Error ? error.message : 'Insert failed.';
+      console.error('[Sidekick] Insert failed in App.', error);
+      setStatus(message);
+      addAction(`Insert failed: ${message}`);
     } finally {
+      console.log('[Sidekick] Insert flow finished.');
       insertInFlightRef.current = false;
       setIsInserting(false);
     }
@@ -355,7 +391,10 @@ export function App() {
       addAction(`Created ${created} insertion instrument track${created === 1 ? '' : 's'}.`);
       await refreshSession();
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : 'Could not create instrument tracks.');
+      const message = error instanceof Error ? error.message : 'Could not create instrument tracks.';
+      console.error('[Sidekick] Create note tracks failed.', error);
+      setStatus(message);
+      addAction(`Create tracks failed: ${message}`);
     }
   }
 
@@ -368,6 +407,14 @@ export function App() {
   const insertionStyleInstruments = sanitizeAutoCreateInstrumentMap(selectedStyle.instruments);
   const noteTracks = analysis?.session.tracks.filter((track) => track.tags?.includes('noteTrack')) ?? [];
   const projectInstrumentNames = analysis?.session.tracks.map((track) => track.instrumentName).filter((name): name is string => Boolean(name)) ?? [];
+  const canWriteToAudiotool = services.nexusMode === 'mock' || Boolean(connectionState?.connected);
+  const insertHint = services.nexusMode === 'real' && !connectionState?.connected
+    ? connectionState?.projectUrl
+      ? 'Audiotool project sync is offline. Wait for Project synced before inserting or creating tracks.'
+      : 'Sync an Audiotool project before inserting MIDI.'
+    : isInserting
+      ? 'Insert in progress. Wait for the current Audiotool write to finish.'
+      : undefined;
 
   function handleLayoutPresetSelect(preset: DashboardLayoutPreset) {
     setLayoutPreset(preset);
@@ -496,7 +543,8 @@ export function App() {
                     </p>
                     <GeneratedMidiCard
                       midi={generatedMidi}
-                      canInsert={Boolean(services.nexus.insertMidi) && !isInserting}
+                      canInsert={Boolean(services.nexus.insertMidi) && !isInserting && canWriteToAudiotool}
+                      insertHint={insertHint}
                       noteTracks={noteTracks}
                       styleInstruments={insertionStyleInstruments}
                       canAutoCreateInstruments={Boolean(services.nexus.createSuggestedInstrument)}

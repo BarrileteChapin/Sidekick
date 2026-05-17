@@ -8,6 +8,7 @@ import { useMemo, useState } from 'react';
 export function GeneratedMidiCard({
   midi,
   canInsert,
+  insertHint,
   noteTracks,
   styleInstruments,
   canAutoCreateInstruments,
@@ -18,6 +19,7 @@ export function GeneratedMidiCard({
 }: {
   midi: GeneratedMidi | null;
   canInsert: boolean;
+  insertHint?: string;
   noteTracks: SessionTrack[];
   styleInstruments?: Partial<Record<TrackRole, string>>;
   canAutoCreateInstruments?: boolean;
@@ -142,6 +144,9 @@ export function GeneratedMidiCard({
               ? `${missingLaneCount} instrument track${missingLaneCount === 1 ? '' : 's'} will be created automatically when you insert.`
               : `${missingLaneCount} instrument track${missingLaneCount === 1 ? ' is' : 's are'} missing. Create them below before inserting.`}
           </p>
+        ) : null}
+        {!canInsert && insertHint ? (
+          <p className="status-bar" role="alert">{insertHint}</p>
         ) : null}
       </div>
       <div className="pill-row">

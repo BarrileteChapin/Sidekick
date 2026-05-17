@@ -1,5 +1,5 @@
 import { audiotool, type AuthenticatedClient, type BrowserAuthResult, type SyncedDocument } from '@audiotool/nexus';
-import type { NexusLocation } from '@audiotool/nexus/document';
+import { schemaPathToSchemaLocation, type NexusLocation, type SchemaPath } from '@audiotool/nexus/document';
 import { Ticks } from '@audiotool/nexus/utils';
 import type { MidiInsertOptions, NexusClient, NexusConnectionState, SuggestedInstrumentRequest } from './NexusClient';
 import type { SessionContext, SessionTrack, TrackRole } from '../core/types';
@@ -19,6 +19,7 @@ const storedProjectUrlKey = 'sidekick:audiotool-project-url';
 const PRESET_LOOKUP_TIMEOUT_MS = 10000;
 const WRITE_TRANSACTION_TIMEOUT_MS = 12000;
 const POST_WRITE_VERIFICATION_TIMEOUT_MS = 4000;
+const DOCUMENT_RECONNECT_TIMEOUT_MS = 4000;
 
 export class AudiotoolSdkNexusClient implements NexusClient {
   private authResult: BrowserAuthResult | null = null;
@@ -155,7 +156,7 @@ export class AudiotoolSdkNexusClient implements NexusClient {
       const maxTrackLengthBeats = Math.max(...generatedTracks.map((track) => getGeneratedTrackLengthBeats(track, midi.request.bars * 4)));
       const requiredDurationTicks = beatsToTicks(startBeat + maxTrackLengthBeats);
 
-      console.info(
+      console.log(
         `[Sidekick] Starting MIDI insert for ${generatedTracks.length} track(s). ` +
         `Mode=${options.trackMode ?? 'distribute'}, connected=${document.connected.getValue()}.`
       );
@@ -197,7 +198,7 @@ export class AudiotoolSdkNexusClient implements NexusClient {
         'Timed out while submitting the MIDI insert to Audiotool. The synced document is not accepting write transactions.'
       );
 
-      console.info(`[Sidekick] MIDI insert transaction submitted with ${insertedRegions.length} region(s). Verifying sync...`);
+      console.log(`[Sidekick] MIDI insert transaction submitted with ${insertedRegions.length} region(s). Verifying sync...`);
       const insertedRegionIds = new Set(insertedRegions.map((region) => region.regionId));
       await withTimeout(
         verifyInsertedRegionsAfterSync(document, insertedRegions),
@@ -212,7 +213,7 @@ export class AudiotoolSdkNexusClient implements NexusClient {
           'can be queried immediately. If this persists, refresh project sync.'
         );
       }
-      console.info(
+      console.log(
         `[Sidekick] Inserted ${insertedRegions.length} MIDI region(s) at beat ${startBeat}. ` +
         `Document online: ${document.connected.getValue()}.`
       );
@@ -267,7 +268,7 @@ export class AudiotoolSdkNexusClient implements NexusClient {
       const document = await this.getWritableDocument('add instruments');
 
       const presetSlug = request.audiotoolInstrumentSlug ?? chooseInstrumentSlug(request);
-      console.info(
+      console.log(
         `[Sidekick] Starting instrument creation for "${request.name}" (${request.role}) ` +
         `using preset "${presetSlug}". Connected=${document.connected.getValue()}.`
       );
@@ -276,16 +277,20 @@ export class AudiotoolSdkNexusClient implements NexusClient {
         PRESET_LOOKUP_TIMEOUT_MS,
         `Timed out while resolving Audiotool preset "${presetSlug}". The preset lookup never completed.`
       );
-      console.info(`[Sidekick] Resolved preset "${presetSlug}". Submitting instrument creation transaction...`);
+      console.log(`[Sidekick] Resolved preset "${presetSlug}". Submitting instrument creation transaction...`);
       const presetName = normalizePresetName(presetSlug);
       const noteTracks = getNoteTracks(document);
       const maxOrder = Math.max(...noteTracks.map((track) => track.orderAmongTracks ?? 0), 0);
       let createdTrackId = '';
+      let createdDeviceId = '';
+      let createdDeviceType = '';
       let audioSocketField: string | undefined;
 
       await withTimeout(
         document.modify((transaction) => {
           const device = transaction.createDeviceFromPreset(preset);
+          createdDeviceId = device.id;
+          createdDeviceType = device.entityType;
           if ('displayName' in device.fields) {
             transaction.update(device.fields.displayName, request.name);
           }
@@ -306,28 +311,14 @@ export class AudiotoolSdkNexusClient implements NexusClient {
           });
           createdTrackId = noteTrack.id;
 
-          const outputSocket = resolveDeviceAudioOutputLocation(device.fields as Record<string, unknown>);
-          if (outputSocket) {
-            audioSocketField = outputSocket.fieldName;
-            const existingChannelCount = transaction.entities.ofTypes('mixerChannel').get().length;
-            const mixerChannel = transaction.create('mixerChannel', {
-              displayParameters: {
-                displayName: request.name,
-                orderAmongStrips: existingChannelCount + 1
-              }
-            });
-            transaction.create('desktopAudioCable', {
-              fromSocket: outputSocket.location,
-              toSocket: mixerChannel.fields.audioInput.location
-            });
-          }
+          audioSocketField = resolveDeviceAudioOutputFieldName(device.fields as Record<string, unknown>);
         }),
         WRITE_TRANSACTION_TIMEOUT_MS,
         `Timed out while creating the Audiotool instrument track "${request.name}". ` +
-        'The synced document is not accepting the transaction or the preset wiring is unsupported.'
+        'The synced document is not accepting the core track-creation transaction.'
       );
 
-      console.info(
+      console.log(
         `[Sidekick] Instrument creation transaction submitted for "${request.name}" as track "${createdTrackId}". ` +
         'Verifying sync...'
       );
@@ -343,7 +334,21 @@ export class AudiotoolSdkNexusClient implements NexusClient {
         POST_WRITE_VERIFICATION_TIMEOUT_MS,
         `Timed out while confirming the new Audiotool instrument track "${request.name}" after the transaction was sent.`
       );
-      console.info(`[Sidekick] Confirmed created instrument track "${createdTrackId}".`);
+      console.log(`[Sidekick] Confirmed created instrument track "${createdTrackId}".`);
+
+      if (audioSocketField && createdDeviceId && createdDeviceType) {
+        await connectCreatedInstrumentToMixer(document, {
+          deviceId: createdDeviceId,
+          deviceEntityType: createdDeviceType,
+          outputFieldName: audioSocketField,
+          trackName: request.name
+        });
+      } else {
+        console.warn(
+          `[Sidekick] Created instrument "${request.name}" (${presetSlug}) without a known audio output socket. ` +
+          'Its note lane exists, but no mixer cable was added.'
+        );
+      }
 
       return {
         id: createdTrackId,
@@ -394,9 +399,18 @@ export class AudiotoolSdkNexusClient implements NexusClient {
     if (writableDocument) {
       console.warn(
         `[Sidekick] Audiotool reported sync offline while preparing to ${actionDescription}. ` +
-        'Proceeding with the current document and verifying the backend result afterward.'
+        'Waiting briefly for the synced document to reconnect before allowing the write.'
       );
-      return writableDocument;
+
+      const recovered = await waitForDocumentConnected(writableDocument, DOCUMENT_RECONNECT_TIMEOUT_MS);
+      if (recovered && writableDocument.connected.getValue()) {
+        console.log(`[Sidekick] Audiotool sync recovered. Continuing with ${actionDescription}.`);
+        return writableDocument;
+      }
+
+      throw new Error(
+        `Audiotool project sync is offline. Re-sync the project and wait for "Project synced" before attempting to ${actionDescription}.`
+      );
     }
 
     throw new Error(`Sync an Audiotool project before attempting to ${actionDescription}.`);
@@ -685,6 +699,44 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => globalThis.setTimeout(resolve, ms));
 }
 
+async function connectCreatedInstrumentToMixer(
+  document: SyncedDocument,
+  options: { deviceId: string; deviceEntityType: string; outputFieldName: string; trackName: string }
+): Promise<void> {
+  const { deviceId, deviceEntityType, outputFieldName, trackName } = options;
+  console.log(
+    `[Sidekick] Connecting created instrument "${trackName}" to mixer via ${deviceEntityType}.${outputFieldName}.`
+  );
+
+  try {
+    await withTimeout(
+      document.modify((transaction) => {
+        const existingChannelCount = transaction.entities.ofTypes('mixerChannel').get().length;
+        const mixerChannel = transaction.create('mixerChannel', {
+          displayParameters: {
+            displayName: trackName,
+            orderAmongStrips: existingChannelCount + 1
+          }
+        });
+
+        transaction.create('desktopAudioCable', {
+          fromSocket: buildSchemaPathLocation(deviceId, `/${deviceEntityType}/${outputFieldName}` as SchemaPath),
+          toSocket: buildSchemaPathLocation(mixerChannel.id, '/mixerChannel/audioInput' as SchemaPath)
+        });
+      }),
+      WRITE_TRANSACTION_TIMEOUT_MS,
+      `Timed out while connecting the created instrument "${trackName}" to the Audiotool mixer.`
+    );
+    console.log(`[Sidekick] Connected created instrument "${trackName}" to a mixer channel.`);
+  } catch (error) {
+    console.warn(
+      `[Sidekick] Mixer wiring failed for created instrument "${trackName}". ` +
+      'The note track was created, but its audio was not connected automatically.',
+      error
+    );
+  }
+}
+
 function waitForDocumentConnected(document: SyncedDocument, timeoutMs: number): Promise<boolean> {
   if (document.connected.getValue()) {
     return Promise.resolve(true);
@@ -733,6 +785,19 @@ function colorIndexForRole(role: GeneratedMidiTrack['role']): number {
 
 function beatsToTicks(beats: number): number {
   return Math.round(beats * Ticks.Beat);
+}
+
+function buildSchemaPathLocation(entityId: string, path: SchemaPath): NexusLocation {
+  const schemaLocation = schemaPathToSchemaLocation(path);
+  return {
+    entityId,
+    entityType: schemaLocation.entityType,
+    fieldIndex: [...schemaLocation.fieldIndex]
+  } as unknown as NexusLocation;
+}
+
+function resolveDeviceAudioOutputFieldName(fields: Record<string, unknown>): string | undefined {
+  return DEVICE_AUDIO_OUTPUT_FIELDS.find((fieldName) => fieldName in fields);
 }
 
 export function resolveDeviceAudioOutputLocation(fields: Record<string, unknown>): { fieldName: string; location: NexusLocation } | undefined {
