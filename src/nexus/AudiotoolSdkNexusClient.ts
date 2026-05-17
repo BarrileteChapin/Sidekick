@@ -14,8 +14,6 @@ type NexusEntityLike = {
 };
 
 const DEVICE_AUDIO_OUTPUT_FIELDS = ['audioOutput', 'mainOutput', 'masterOutput'] as const;
-const INITIAL_SYNC_WAIT_MS = 2500;
-const RECONNECT_SYNC_WAIT_MS = 4000;
 
 const storedProjectUrlKey = 'sidekick:audiotool-project-url';
 
@@ -75,7 +73,6 @@ export class AudiotoolSdkNexusClient implements NexusClient {
     localStorage.setItem(storedProjectUrlKey, this.projectUrl);
     this.document = await client.open(this.projectUrl);
     await this.document.start();
-    await waitForDocumentConnected(this.document, INITIAL_SYNC_WAIT_MS);
   }
 
   async disconnectProject(): Promise<void> {
@@ -338,20 +335,20 @@ export class AudiotoolSdkNexusClient implements NexusClient {
       await this.connectProject(this.projectUrl);
     }
 
-    if (this.document && (this.document.connected.getValue() || await waitForDocumentConnected(this.document, INITIAL_SYNC_WAIT_MS))) {
+    if (this.document?.connected.getValue()) {
       return this.document;
     }
 
-    if (!this.projectUrl) {
-      throw new Error('Audiotool sync is temporarily offline. Re-sync the project and try again.');
+    const writableDocument = this.document;
+    if (writableDocument) {
+      console.warn(
+        `[Sidekick] Audiotool reported sync offline while preparing to ${actionDescription}. ` +
+        'Proceeding with the current document and verifying the backend result afterward.'
+      );
+      return writableDocument;
     }
 
-    await this.connectProject(this.projectUrl);
-    if (this.document && (this.document.connected.getValue() || await waitForDocumentConnected(this.document, RECONNECT_SYNC_WAIT_MS))) {
-      return this.document;
-    }
-
-    throw new Error('Audiotool sync is temporarily offline. Re-sync the project and try again.');
+    throw new Error(`Sync an Audiotool project before attempting to ${actionDescription}.`);
   }
 
   private getStatusMessage(): string {

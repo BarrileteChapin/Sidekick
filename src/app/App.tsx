@@ -38,6 +38,7 @@ export function App() {
   const [isChatting, setIsChatting] = useState(false);
   const [isAnalyzingReference, setIsAnalyzingReference] = useState(false);
   const [isInserting, setIsInserting] = useState(false);
+  const insertInFlightRef = useRef(false);
   const styles = services.styles.getAll();
   const [generationState, setGenerationState] = useState<GenerateMusicState>({
     styleProfileId: services.styles.getDefault().id,
@@ -244,6 +245,8 @@ export function App() {
 
   async function handleInsert(options: MidiInsertOptions) {
     if (!generatedMidi) return;
+    if (insertInFlightRef.current) return;
+    insertInFlightRef.current = true;
     setIsInserting(true);
     try {
       const activeTracks = generatedMidi.tracks.filter((t) => t.notes.length > 0);
@@ -304,6 +307,7 @@ export function App() {
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Insert failed.');
     } finally {
+      insertInFlightRef.current = false;
       setIsInserting(false);
     }
   }
