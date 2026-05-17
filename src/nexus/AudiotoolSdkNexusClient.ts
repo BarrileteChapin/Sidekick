@@ -150,28 +150,29 @@ export class AudiotoolSdkNexusClient implements NexusClient {
     const claimedNoteTrackIds = new Set<string>();
     distributedTargets.forEach((target) => { if (target) claimedNoteTrackIds.add(target.id); });
 
-    await this.document.modify((transaction) => {
-      generatedTracks.forEach((generatedTrack, index) => {
-        let noteTrack: NoteTrackTarget;
-        if (options.trackMode === 'selected') {
-          noteTrack = explicitTarget ?? noteTracks[0];
+    for (const [index, generatedTrack] of generatedTracks.entries()) {
+      let noteTrack: NoteTrackTarget;
+      if (options.trackMode === 'selected') {
+        noteTrack = explicitTarget ?? noteTracks[0];
+      } else {
+        const distributed = distributedTargets[index];
+        if (distributed) {
+          noteTrack = distributed;
+        } else if (explicitTarget) {
+          noteTrack = explicitTarget;
         } else {
-          const distributed = distributedTargets[index];
-          if (distributed) {
-            noteTrack = distributed;
-          } else if (explicitTarget) {
-            noteTrack = explicitTarget;
-          } else {
-            // Last resort: pick the first unclaimed track, then fall back to noteTracks[0].
-            const unclaimed = noteTracks.find((t) => !claimedNoteTrackIds.has(t.id));
-            noteTrack = unclaimed ?? noteTracks[0];
-            if (noteTrack) claimedNoteTrackIds.add(noteTrack.id);
-            console.warn(
-              `[Sidekick] No distributed target for generated track "${generatedTrack.name}" (${generatedTrack.role}), ` +
-              `falling back to "${noteTrack.id}". This may indicate a sync delay after creating instruments.`
-            );
-          }
+          // Last resort: pick the first unclaimed track, then fall back to noteTracks[0].
+          const unclaimed = noteTracks.find((t) => !claimedNoteTrackIds.has(t.id));
+          noteTrack = unclaimed ?? noteTracks[0];
+          if (noteTrack) claimedNoteTrackIds.add(noteTrack.id);
+          console.warn(
+            `[Sidekick] No distributed target for generated track "${generatedTrack.name}" (${generatedTrack.role}), ` +
+            `falling back to "${noteTrack.id}". This may indicate a sync delay after creating instruments.`
+          );
         }
+      }
+
+      await this.document.modify((transaction) => {
         try {
           insertGeneratedTrack(transaction, midi, generatedTrack, noteTrack, options.startBeat ?? 0);
         } catch (error) {
@@ -185,7 +186,7 @@ export class AudiotoolSdkNexusClient implements NexusClient {
           throw error;
         }
       });
-    });
+    }
   }
 
   async createAdditionalNoteTracks(count: number): Promise<number> {
@@ -198,7 +199,7 @@ export class AudiotoolSdkNexusClient implements NexusClient {
     if (!baseTrack?.player) {
       throw new Error('No source instrument note track was found. Create an instrument track in Audiotool first, then refresh Sidekick.');
     }
-    const basePlayer = pointerFromEntityId(baseTrack.player.entityId, `noteTrack:${baseTrack.id}:player`);
+    const basePlayerEntityId = baseTrack.player.entityId;
 
     const amount = Math.max(0, Math.min(8, Math.floor(count)));
     if (amount === 0) return 0;
@@ -207,7 +208,7 @@ export class AudiotoolSdkNexusClient implements NexusClient {
     await this.document.modify((transaction) => {
       for (let index = 0; index < amount; index += 1) {
         transaction.create('noteTrack', {
-          player: basePlayer,
+          player: pointerFromEntityId(basePlayerEntityId, `noteTrack:${baseTrack.id}:player:${index}`),
           isEnabled: true,
           orderAmongTracks: maxOrder + index + 1
         });
@@ -484,41 +485,79 @@ function insertGeneratedTrack(
   const regionDurationTicks = beatsToTicks(
     Math.max(...generatedTrack.notes.map((note) => note.startBeat + note.durationBeats), midi.request.bars * 4)
   );
-  const collection = transaction.create('noteCollection', {});
-  const collectionLocation = pointerFromEntityId(collection.id, 'noteCollection');
-  const noteTrackLocation = pointerFromEntityId(noteTrack.id, `noteTrack:${noteTrack.id}`);
+  let collectionId = '';
+  try {
+    const collection = transaction.create('noteCollection', {});
+    collectionId = collection.id;
+  } catch (error) {
+    console.error('[Sidekick] noteCollection create failed.', {
+      generatedTrack: generatedTrack.name,
+      role: generatedTrack.role,
+      noteTrackId: noteTrack.id,
+      startBeat,
+      error
+    });
+    throw error;
+  }
   console.debug('[Sidekick] DEBUG: insertGeneratedTrack pointers', {
     generatedTrack: generatedTrack.name,
     role: generatedTrack.role,
     startBeat,
     noteTrackId: noteTrack.id,
-    noteTrackLocation: describePointerShape(noteTrackLocation),
-    collectionLocation: describePointerShape(collectionLocation)
+    noteTrackLocation: describePointerShape(pointerFromEntityId(noteTrack.id, `noteTrack:${noteTrack.id}:debug`)),
+    collectionLocation: describePointerShape(pointerFromEntityId(collectionId, 'noteCollection:debug'))
   });
-  transaction.create('noteRegion', {
-    collection: collectionLocation,
-    track: noteTrackLocation,
-    region: {
-      positionTicks: beatsToTicks(startBeat),
-      durationTicks: regionDurationTicks,
-      collectionOffsetTicks: 0,
-      loopOffsetTicks: 0,
-      loopDurationTicks: regionDurationTicks,
-      isEnabled: true,
-      colorIndex: colorIndexForRole(generatedTrack.role),
-      displayName: `${midi.name} - ${generatedTrack.name}`
-    }
-  });
-
-  generatedTrack.notes.forEach((note) => {
-    transaction.create('note', {
-      collection: collectionLocation,
-      positionTicks: beatsToTicks(note.startBeat),
-      durationTicks: Math.max(1, beatsToTicks(note.durationBeats)),
-      pitch: Math.max(0, Math.min(127, Math.round(note.pitch))),
-      velocity: Math.max(0, Math.min(1, note.velocity / 127)),
-      doesSlide: false
+  try {
+    transaction.create('noteRegion', {
+      collection: pointerFromEntityId(collectionId, 'noteRegion:collection'),
+      track: pointerFromEntityId(noteTrack.id, `noteRegion:track:${noteTrack.id}`),
+      region: {
+        positionTicks: beatsToTicks(startBeat),
+        durationTicks: regionDurationTicks,
+        collectionOffsetTicks: 0,
+        loopOffsetTicks: 0,
+        loopDurationTicks: regionDurationTicks,
+        isEnabled: true,
+        colorIndex: colorIndexForRole(generatedTrack.role),
+        displayName: `${midi.name} - ${generatedTrack.name}`
+      }
     });
+  } catch (error) {
+    console.error('[Sidekick] noteRegion create failed.', {
+      generatedTrack: generatedTrack.name,
+      role: generatedTrack.role,
+      noteTrackId: noteTrack.id,
+      collectionId,
+      collectionPointer: describePointerShape(pointerFromEntityId(collectionId, 'noteRegion:collection:error')),
+      trackPointer: describePointerShape(pointerFromEntityId(noteTrack.id, `noteRegion:track:${noteTrack.id}:error`)),
+      error
+    });
+    throw error;
+  }
+
+  generatedTrack.notes.forEach((note, noteIndex) => {
+    try {
+      transaction.create('note', {
+        collection: pointerFromEntityId(collectionId, `note:collection:${noteIndex}`),
+        positionTicks: beatsToTicks(note.startBeat),
+        durationTicks: Math.max(1, beatsToTicks(note.durationBeats)),
+        pitch: Math.max(0, Math.min(127, Math.round(note.pitch))),
+        velocity: Math.max(0, Math.min(1, note.velocity / 127)),
+        doesSlide: false
+      });
+    } catch (error) {
+      console.error('[Sidekick] note create failed.', {
+        generatedTrack: generatedTrack.name,
+        role: generatedTrack.role,
+        noteTrackId: noteTrack.id,
+        noteIndex,
+        note,
+        collectionId,
+        collectionPointer: describePointerShape(pointerFromEntityId(collectionId, `note:collection:${noteIndex}:error`)),
+        error
+      });
+      throw error;
+    }
   });
 }
 
