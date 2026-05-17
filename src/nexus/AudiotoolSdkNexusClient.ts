@@ -186,8 +186,9 @@ export class AudiotoolSdkNexusClient implements NexusClient {
       return regions;
     });
 
-    const noteRegions = this.document.queryEntities.ofTypes('noteRegion').get();
     const insertedRegionIds = new Set(insertedRegions.map((region) => region.regionId));
+    await verifyInsertedRegionsAfterSync(this.document, insertedRegionIds);
+    const noteRegions = this.document.queryEntities.ofTypes('noteRegion').get();
     const visibleRegions = noteRegions.filter((region) => insertedRegionIds.has(region.id)).length;
     if (visibleRegions !== insertedRegions.length) {
       console.warn(
@@ -532,6 +533,35 @@ function ensureTimelineDuration(transaction: MidiInsertTransaction, requiredDura
 
 function getGeneratedTrackLengthBeats(track: GeneratedMidiTrack, fallbackBeats: number): number {
   return Math.max(...track.notes.map((note) => note.startBeat + note.durationBeats), fallbackBeats);
+}
+
+async function verifyInsertedRegionsAfterSync(document: SyncedDocument, insertedRegionIds: ReadonlySet<string>): Promise<void> {
+  let elapsedMs = 0;
+  for (const targetMs of [350, 1200]) {
+    await delay(targetMs - elapsedMs);
+    elapsedMs = targetMs;
+
+    if (!document.connected.getValue()) {
+      throw new Error('Audiotool sync dropped while confirming the MIDI insert. Re-sync the project and try again.');
+    }
+
+    const visibleCount = countInsertedRegions(document, insertedRegionIds);
+    if (visibleCount !== insertedRegionIds.size) {
+      throw new Error(
+        visibleCount === 0
+          ? 'Audiotool synced the project metadata but rejected the MIDI insert after backend reconciliation. This usually means the current Audiotool app/origin can read the project but is not being allowed to write it.'
+          : `Audiotool only kept ${visibleCount} of ${insertedRegionIds.size} inserted MIDI region(s) after backend reconciliation.`
+      );
+    }
+  }
+}
+
+function countInsertedRegions(document: SyncedDocument, insertedRegionIds: ReadonlySet<string>): number {
+  return document.queryEntities.ofTypes('noteRegion').get().filter((region) => insertedRegionIds.has(region.id)).length;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function colorIndexForRole(role: GeneratedMidiTrack['role']): number {
