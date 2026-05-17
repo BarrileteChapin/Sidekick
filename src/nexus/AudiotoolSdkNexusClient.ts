@@ -258,6 +258,7 @@ export class AudiotoolSdkNexusClient implements NexusClient {
 
       const output = resolveDeviceAudioOutputLocation(device.fields as unknown as Record<string, unknown>);
       if (output) {
+        const normalizedFromSocket = toPointerLocation(output.location, `device:${request.name}:${output.fieldName}`);
         console.info('[Sidekick] Wiring created device output socket.', {
           trackName: request.name,
           outputField: output.fieldName
@@ -270,8 +271,14 @@ export class AudiotoolSdkNexusClient implements NexusClient {
           }
         });
         const audioInput = toPointerLocation(mixerChannel.fields.audioInput.location, 'mixerChannel:audioInput');
+        console.debug('[Sidekick] DEBUG: desktopAudioCable socket pointers', {
+          trackName: request.name,
+          presetSlug,
+          fromSocket: describePointerShape(normalizedFromSocket),
+          toSocket: describePointerShape(audioInput)
+        });
         transaction.create('desktopAudioCable', {
-          fromSocket: output.location as unknown as NexusLocation,
+          fromSocket: normalizedFromSocket,
           toSocket: audioInput
         });
       } else {
@@ -480,6 +487,14 @@ function insertGeneratedTrack(
   const collection = transaction.create('noteCollection', {});
   const collectionLocation = toPointerLocation(collection.location, 'noteCollection');
   const noteTrackLocation = toPointerLocation(noteTrack.location, `noteTrack:${noteTrack.id}`);
+  console.debug('[Sidekick] DEBUG: insertGeneratedTrack pointers', {
+    generatedTrack: generatedTrack.name,
+    role: generatedTrack.role,
+    startBeat,
+    noteTrackId: noteTrack.id,
+    noteTrackLocation: describePointerShape(noteTrackLocation),
+    collectionLocation: describePointerShape(collectionLocation)
+  });
   transaction.create('noteRegion', {
     collection: collectionLocation,
     track: noteTrackLocation,
@@ -560,16 +575,66 @@ function toPointerLocation(location: unknown, context: string): NexusLocation {
   return normalized as unknown as NexusLocation;
 }
 
-function resolveSocketLocation(field: unknown): PointerLocation | undefined {
+function describePointerShape(location: unknown): {
+  entityId?: unknown;
+  fieldIndex?: unknown;
+  fieldIndexType: string;
+  fieldIndexIsArray: boolean;
+} {
+  if (typeof location !== 'object' || location === null) {
+    return {
+      fieldIndexType: typeof location,
+      fieldIndexIsArray: false
+    };
+  }
+
+  const value = location as { entityId?: unknown; fieldIndex?: unknown };
+  return {
+    entityId: value.entityId,
+    fieldIndex: value.fieldIndex,
+    fieldIndexType: typeof value.fieldIndex,
+    fieldIndexIsArray: Array.isArray(value.fieldIndex)
+  };
+}
+
+function resolveSocketLocation(field: unknown, context: string): PointerLocation | undefined {
   if (typeof field !== 'object' || field === null || !('location' in field)) {
     return undefined;
   }
-  return normalizePointerLocation((field as { location?: unknown }).location);
+
+  const rawLocation = (field as { location?: unknown }).location;
+  if (typeof rawLocation !== 'object' || rawLocation === null) {
+    console.warn('[Sidekick] Socket location is missing or invalid.', {
+      context,
+      pointer: describePointerShape(rawLocation)
+    });
+    return undefined;
+  }
+
+  const locationRecord = rawLocation as { fieldIndex?: unknown };
+  if ('fieldIndex' in locationRecord && locationRecord.fieldIndex !== undefined && !Array.isArray(locationRecord.fieldIndex)) {
+    console.warn('[Sidekick] Socket location fieldIndex is not an array.', {
+      context,
+      pointer: describePointerShape(rawLocation)
+    });
+    return undefined;
+  }
+
+  const normalized = normalizePointerLocation(rawLocation);
+  if (!normalized) {
+    console.warn('[Sidekick] Socket location pointer is missing required values.', {
+      context,
+      pointer: describePointerShape(rawLocation)
+    });
+    return undefined;
+  }
+
+  return normalized;
 }
 
 function resolveDeviceAudioOutputLocation(fields: Record<string, unknown>): { fieldName: string; location: PointerLocation } | undefined {
   for (const fieldName of DEVICE_AUDIO_OUTPUT_FIELDS) {
-    const location = resolveSocketLocation(fields[fieldName]);
+    const location = resolveSocketLocation(fields[fieldName], `device.${fieldName}`);
     if (location) {
       return { fieldName, location };
     }
@@ -615,3 +680,11 @@ function chooseInstrumentSlug(request: SuggestedInstrumentRequest): string {
   if (/pad|airy|chord|harmony|piano|organ|keys/.test(text)) return 'pulverisateur';
   return 'heisenberg';
 }
+
+export const __testing = {
+  normalizePointerLocation,
+  toPointerLocation,
+  resolveDeviceAudioOutputLocation,
+  resolveSocketLocation,
+  describePointerShape
+};
