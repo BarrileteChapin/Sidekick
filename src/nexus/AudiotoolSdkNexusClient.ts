@@ -681,11 +681,8 @@ function insertGeneratedTrack(
 ): InsertedRegionSummary {
   const regionDurationTicks = beatsToTicks(getGeneratedTrackLengthBeats(generatedTrack, midi.request.bars * 4));
   const collection = transaction.create('noteCollection', {});
-  const collectionLocation = normalizeLocation(collection.location);
-  const trackLocation = normalizeLocation(noteTrack.location);
-  if (!collectionLocation || !trackLocation) {
-    throw new Error('Could not resolve safe pointer locations for MIDI insertion. Refresh project sync and retry.');
-  }
+  const collectionLocation = createPointer(collection.id);
+  const trackLocation = createPointer(noteTrack.id);
 
   const noteRegion = transaction.create('noteRegion', {
     collection: collectionLocation,
@@ -949,9 +946,13 @@ function normalizeLocation(value: unknown): NexusLocation | undefined {
     ? location.fieldIndex.filter((entry): entry is number => typeof entry === 'number')
     : [];
 
+  return createPointer(location.entityId, fieldIndex);
+}
+
+function createPointer(entityId: string, fieldIndex: ReadonlyArray<number> = []): NexusLocation {
   return {
-    entityId: location.entityId,
-    fieldIndex
+    entityId,
+    fieldIndex: [...fieldIndex]
   } as unknown as NexusLocation;
 }
 
