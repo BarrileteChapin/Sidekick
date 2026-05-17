@@ -1,0 +1,85 @@
+import { AudiotoolSdkNexusClient } from './AudiotoolSdkNexusClient';
+import { MockNexusClient } from './MockNexusClient';
+import type { NexusClient } from './NexusClient';
+import { RealNexusClient, type AudiotoolNexusLike } from './RealNexusClient';
+
+type NexusWindow = Window & typeof globalThis & {
+  audiotoolNexus?: AudiotoolNexusLike;
+  nexus?: AudiotoolNexusLike;
+  NEXUS?: AudiotoolNexusLike;
+};
+
+export type NexusRuntimeMode = 'mock' | 'real' | 'auto';
+
+export interface NexusRuntime {
+  client: NexusClient;
+  mode: 'mock' | 'real';
+  source: string;
+}
+
+export interface NexusRuntimeOptions {
+  mode?: NexusRuntimeMode;
+  audiotoolClientId?: string;
+  audiotoolRedirectUrl?: string;
+}
+
+export function createNexusRuntime(options: NexusRuntimeOptions = {}): NexusRuntime {
+  const mode = options.mode ?? getConfiguredMode();
+  const hostNexus = getHostNexus();
+
+  if (mode !== 'mock' && hostNexus) {
+    return {
+      client: new RealNexusClient(hostNexus),
+      mode: 'real',
+      source: 'Audiotool host NEXUS'
+    };
+  }
+
+  const clientId = options.audiotoolClientId ?? getStoredClientId() ?? import.meta.env.VITE_AUDIOTOOL_CLIENT_ID;
+  if (mode !== 'mock' && typeof clientId === 'string' && clientId.length > 0) {
+    storeClientId(clientId);
+    return {
+      client: new AudiotoolSdkNexusClient(clientId, getRedirectUrl(options.audiotoolRedirectUrl)),
+      mode: 'real',
+      source: '@audiotool/nexus OAuth'
+    };
+  }
+
+  return {
+    client: new MockNexusClient(),
+    mode: 'mock',
+    source:
+      mode === 'mock'
+        ? 'Mock NEXUS'
+        : 'Mock fallback; set VITE_AUDIOTOOL_CLIENT_ID or enter a client ID to enable Audiotool login'
+  };
+}
+
+function getConfiguredMode(): NexusRuntimeMode {
+  const mode = import.meta.env.VITE_SIDEKICK_MODE;
+  return mode === 'real' || mode === 'mock' || mode === 'auto' ? mode : 'auto';
+}
+
+function getHostNexus(): AudiotoolNexusLike | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  const hostWindow = window as NexusWindow;
+  return hostWindow.audiotoolNexus ?? hostWindow.nexus ?? hostWindow.NEXUS ?? null;
+}
+
+function getStoredClientId(): string | null {
+  if (typeof localStorage === 'undefined') return null;
+  const value = localStorage.getItem('sidekick:audiotool-client-id');
+  return value?.trim() || null;
+}
+
+function storeClientId(clientId: string): void {
+  if (typeof localStorage === 'undefined') return;
+  localStorage.setItem('sidekick:audiotool-client-id', clientId);
+}
+
+function getRedirectUrl(optionRedirectUrl: string | undefined): string {
+  return optionRedirectUrl ?? import.meta.env.VITE_AUDIOTOOL_REDIRECT_URL ?? 'http://127.0.0.1:5173/';
+}
