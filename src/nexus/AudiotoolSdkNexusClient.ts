@@ -455,7 +455,6 @@ function getDefaultRedirectUrl(): string {
 
 type NoteTrackTarget = {
   id: string;
-  location?: NexusLocation;
   player?: PointerLocation;
   orderAmongTracks?: number;
 };
@@ -471,10 +470,14 @@ function getNoteTracks(document: SyncedDocument): NoteTrackTarget[] {
   return document.queryEntities.ofTypes('noteTrack').get()
     .map((track): NoteTrackTarget => ({
       id: track.id,
-      location: track.location,
       player: normalizePointerLocation(track.fields.player.value),
       orderAmongTracks: track.fields.orderAmongTracks.value
     }));
+}
+
+function resolveTransactionNoteTrackLocation(transaction: MidiInsertTransaction, noteTrackId: string): NexusLocation | undefined {
+  const track = transaction.entities.ofTypes('noteTrack').get().find((entity) => entity.id === noteTrackId);
+  return track?.location;
 }
 
 function insertGeneratedTrack(
@@ -487,6 +490,7 @@ function insertGeneratedTrack(
   const regionDurationTicks = beatsToTicks(
     Math.max(...generatedTrack.notes.map((note) => note.startBeat + note.durationBeats), midi.request.bars * 4)
   );
+  const noteTrackLocation = resolveTransactionNoteTrackLocation(transaction, noteTrack.id);
   let collectionId = '';
   let collectionLocation: NexusLocation | undefined;
   try {
@@ -508,13 +512,13 @@ function insertGeneratedTrack(
     role: generatedTrack.role,
     startBeat,
     noteTrackId: noteTrack.id,
-    noteTrackLocation: describePointerShape(locationOrEntityPointer(noteTrack.location, noteTrack.id, `noteTrack:${noteTrack.id}:debug`)),
+    noteTrackLocation: describePointerShape(locationOrEntityPointer(noteTrackLocation, noteTrack.id, `noteTrack:${noteTrack.id}:debug`)),
     collectionLocation: describePointerShape(locationOrEntityPointer(collectionLocation, collectionId, 'noteCollection:debug'))
   });
   try {
     transaction.create('noteRegion', {
       collection: locationOrEntityPointer(collectionLocation, collectionId, 'noteRegion:collection'),
-      track: locationOrEntityPointer(noteTrack.location, noteTrack.id, `noteRegion:track:${noteTrack.id}`),
+      track: locationOrEntityPointer(noteTrackLocation, noteTrack.id, `noteRegion:track:${noteTrack.id}`),
       region: {
         positionTicks: beatsToTicks(startBeat),
         durationTicks: regionDurationTicks,
@@ -533,7 +537,7 @@ function insertGeneratedTrack(
       noteTrackId: noteTrack.id,
       collectionId,
       collectionPointer: describePointerShape(locationOrEntityPointer(collectionLocation, collectionId, 'noteRegion:collection:error')),
-      trackPointer: describePointerShape(locationOrEntityPointer(noteTrack.location, noteTrack.id, `noteRegion:track:${noteTrack.id}:error`)),
+      trackPointer: describePointerShape(locationOrEntityPointer(noteTrackLocation, noteTrack.id, `noteRegion:track:${noteTrack.id}:error`)),
       error
     });
     throw error;
