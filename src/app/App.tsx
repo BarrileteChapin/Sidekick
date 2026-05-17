@@ -159,8 +159,7 @@ export function App() {
       // 3. Auto-insert: place generated MIDI into first created (or existing) note track
       const autoInsertAction = (plan.audiotoolActions ?? []).find((a) => a.type === 'auto_insert');
       if (autoInsertAction && autoInsertAction.type === 'auto_insert' && midi) {
-        const insertMidi = services.nexus.insertMidi;
-        if (!insertMidi) {
+        if (!services.nexus.insertMidi) {
           throw new Error('This connection does not support MIDI insertion. Refresh Sidekick and re-sync your project.');
         }
         const activeTracks = midi.tracks.filter((track) => track.notes.length > 0);
@@ -186,7 +185,7 @@ export function App() {
           insertOptions.trackMode = 'selected';
         }
         setStatus('Auto-inserting MIDI into Audiotool…');
-        await insertMidi(midi, insertOptions);
+        await services.nexus.insertMidi(midi, insertOptions);
         const label = targetTrackIds.length > 1
           ? ` across ${targetTrackIds.length} target tracks`
           : createdTracks[0]
@@ -327,11 +326,10 @@ export function App() {
 
       setStatus('Inserting generated MIDI into Audiotool...');
       addAction(`Submitting ${generatedMidi.name} to Audiotool at bar ${Math.floor((insertOptions.startBeat ?? 0) / 4) + 1}, beat ${((insertOptions.startBeat ?? 0) % 4) + 1}.`);
-      const insertMidi = services.nexus.insertMidi;
-      if (!insertMidi) {
+      if (!services.nexus.insertMidi) {
         throw new Error('This connection does not support MIDI insertion. Refresh Sidekick and re-sync your project.');
       }
-      await insertMidi(generatedMidi, insertOptions);
+      await services.nexus.insertMidi(generatedMidi, insertOptions);
       const startBeat = insertOptions.startBeat ?? 0;
       addAction(`Inserted ${generatedMidi.name} at bar ${Math.floor(startBeat / 4) + 1}, beat ${(startBeat % 4) + 1}.`);
       setStatus('Inserted generated MIDI into Audiotool. Refreshing session...');
