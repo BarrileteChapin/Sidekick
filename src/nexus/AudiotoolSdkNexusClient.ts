@@ -20,6 +20,7 @@ const PRESET_LOOKUP_TIMEOUT_MS = 10000;
 const WRITE_TRANSACTION_TIMEOUT_MS = 12000;
 const POST_WRITE_VERIFICATION_TIMEOUT_MS = 4000;
 const DOCUMENT_RECONNECT_TIMEOUT_MS = 4000;
+const WRITE_TRANSACTION_RETRY_LIMIT = 2;
 const DEFAULT_PIANO_INSTRUMENT_SLUG = 'acoustic-piano';
 
 export class AudiotoolSdkNexusClient implements NexusClient {
@@ -162,14 +163,16 @@ export class AudiotoolSdkNexusClient implements NexusClient {
         `Mode=${options.trackMode ?? 'distribute'}, connected=${document.connected.getValue()}.`
       );
 
-      // Track which noteTracks are already claimed so we don't double-assign.
-      const claimedNoteTrackIds = new Set<string>();
-      distributedTargets.forEach((target) => { if (target) claimedNoteTrackIds.add(target.id); });
-
-      const insertedRegions = await withTimeout(
-        document.modify((transaction) => {
+      const insertedRegions = await runWriteTransactionWithRetry<InsertedRegionSummary[]>(
+        document,
+        'insert MIDI',
+        (transaction) => {
           ensureTimelineDuration(transaction, requiredDurationTicks);
           const regions: InsertedRegionSummary[] = [];
+          // Track which noteTracks are already claimed so we don't double-assign.
+          const claimedNoteTrackIds = new Set<string>();
+          distributedTargets.forEach((target) => { if (target) claimedNoteTrackIds.add(target.id); });
+
           generatedTracks.forEach((generatedTrack, index) => {
             let noteTrack: NoteTrackTarget;
             if (options.trackMode === 'selected') {
@@ -194,8 +197,7 @@ export class AudiotoolSdkNexusClient implements NexusClient {
             regions.push(insertGeneratedTrack(transaction, midi, generatedTrack, noteTrack, startBeat));
           });
           return regions;
-        }),
-        WRITE_TRANSACTION_TIMEOUT_MS,
+        },
         'Timed out while submitting the MIDI insert to Audiotool. The synced document is not accepting write transactions. ' +
         'If this only happens on deployment, verify the deployed Audiotool client ID and redirect URL exactly match the app registration.'
       );
@@ -230,10 +232,10 @@ export class AudiotoolSdkNexusClient implements NexusClient {
 
     const noteTracks = getNoteTracks(document);
     const baseTrack = noteTracks[0];
-    if (!baseTrack?.player) {
+    const basePlayer = normalizeLocation(baseTrack?.player);
+    if (!basePlayer) {
       throw new Error('No source instrument note track was found. Create an instrument track in Audiotool first, then refresh Sidekick.');
     }
-    const basePlayer = baseTrack.player;
 
     const amount = Math.max(0, Math.min(8, Math.floor(count)));
     if (amount === 0) return 0;
@@ -304,8 +306,10 @@ export class AudiotoolSdkNexusClient implements NexusClient {
       let createdTrackId = '';
       let appliedPresetSlug = requestedPresetSlug;
 
-      await withTimeout(
-        document.modify((transaction) => {
+      await runWriteTransactionWithRetry<void>(
+        document,
+        `create instrument "${request.name}"`,
+        (transaction) => {
           const existingNoteTracks = transaction.entities.ofTypes('noteTrack').get();
           const maxOrder = Math.max(
             ...existingNoteTracks.map((track) => {
@@ -357,7 +361,10 @@ export class AudiotoolSdkNexusClient implements NexusClient {
           }
 
           appliedPresetSlug = presetSlugForName;
-          const playerLocation = normalizeLocation(device.location) ?? device.location;
+          const playerLocation = normalizeLocation(device.location);
+          if (!playerLocation) {
+            throw new Error('Created device returned an invalid location payload.');
+          }
 
           if ('displayName' in device.fields) {
             transaction.update(device.fields.displayName, request.name);
@@ -396,12 +403,21 @@ export class AudiotoolSdkNexusClient implements NexusClient {
             }
           });
 
+          const fromSocket = normalizeLocation(outputSocket.location);
+          const toSocket = normalizeLocation(mixerChannel.fields.audioInput.location);
+          if (!fromSocket || !toSocket) {
+            console.warn(
+              `[Sidekick] Created instrument "${request.name}" (${presetSlugForName}) but mixer socket locations were invalid. ` +
+              'Skipping automatic mixer cable creation.'
+            );
+            return;
+          }
+
           transaction.create('desktopAudioCable', {
-            fromSocket: normalizeLocation(outputSocket.location) ?? outputSocket.location,
-            toSocket: normalizeLocation(mixerChannel.fields.audioInput.location) ?? mixerChannel.fields.audioInput.location
+            fromSocket,
+            toSocket
           });
-        }),
-        WRITE_TRANSACTION_TIMEOUT_MS,
+        },
         `Timed out while creating the Audiotool instrument track "${request.name}". ` +
         'The synced document is not accepting the track/mixer creation transaction. ' +
         'If this only happens on deployment, verify the deployed Audiotool client ID and redirect URL exactly match the app registration.'
@@ -665,9 +681,15 @@ function insertGeneratedTrack(
 ): InsertedRegionSummary {
   const regionDurationTicks = beatsToTicks(getGeneratedTrackLengthBeats(generatedTrack, midi.request.bars * 4));
   const collection = transaction.create('noteCollection', {});
+  const collectionLocation = normalizeLocation(collection.location);
+  const trackLocation = normalizeLocation(noteTrack.location);
+  if (!collectionLocation || !trackLocation) {
+    throw new Error('Could not resolve safe pointer locations for MIDI insertion. Refresh project sync and retry.');
+  }
+
   const noteRegion = transaction.create('noteRegion', {
-    collection: collection.location,
-    track: noteTrack.location,
+    collection: collectionLocation,
+    track: trackLocation,
     region: {
       positionTicks: beatsToTicks(startBeat),
       durationTicks: regionDurationTicks,
@@ -682,7 +704,7 @@ function insertGeneratedTrack(
 
   generatedTrack.notes.forEach((note) => {
     transaction.create('note', {
-      collection: collection.location,
+      collection: collectionLocation,
       positionTicks: beatsToTicks(note.startBeat),
       durationTicks: Math.max(1, beatsToTicks(note.durationBeats)),
       pitch: Math.max(0, Math.min(127, Math.round(note.pitch))),
@@ -781,10 +803,72 @@ function delay(ms: number): Promise<void> {
 }
 
 function isFieldIndexSliceError(error: unknown): boolean {
-  const message = typeof error === 'object' && error !== null && 'message' in error
+  const message = getErrorMessage(error);
+  return message.includes("reading 'slice'") || message.includes('reading "slice"');
+}
+
+function isWriteTransactionTimeoutError(error: unknown): boolean {
+  const message = getErrorMessage(error).toLowerCase();
+  return message.includes('timed out while submitting the midi insert to audiotool')
+    || message.includes('timed out while creating the audiotool instrument track')
+    || message.includes('synced document is not accepting write transactions')
+    || message.includes('synced document is not accepting the track/mixer creation transaction');
+}
+
+function getErrorMessage(error: unknown): string {
+  return typeof error === 'object' && error !== null && 'message' in error
     ? String((error as { message?: unknown }).message ?? '')
     : '';
-  return message.includes("reading 'slice'") || message.includes('reading "slice"');
+}
+
+async function runWriteTransactionWithRetry<T>(
+  document: SyncedDocument,
+  actionDescription: string,
+  callback: Parameters<SyncedDocument['modify']>[0],
+  timeoutMessage: string
+): Promise<T> {
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= WRITE_TRANSACTION_RETRY_LIMIT; attempt += 1) {
+    try {
+      return await withTimeout(
+        document.modify(callback as never) as Promise<T>,
+        WRITE_TRANSACTION_TIMEOUT_MS,
+        timeoutMessage
+      );
+    } catch (error) {
+      lastError = error;
+      const shouldRetry = attempt < WRITE_TRANSACTION_RETRY_LIMIT && isWriteTransactionTimeoutError(error);
+      if (!shouldRetry) throw error;
+
+      console.warn(
+        `[Sidekick] Write transaction timed out while attempting to ${actionDescription}. ` +
+        'Reconnecting synced document and retrying once.',
+        error
+      );
+
+      const reconnected = await restartDocumentForWriteRetry(document);
+      if (!reconnected) {
+        throw error;
+      }
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(timeoutMessage);
+}
+
+async function restartDocumentForWriteRetry(document: SyncedDocument): Promise<boolean> {
+  try {
+    await document.stop();
+    await document.start();
+    if (document.connected.getValue()) {
+      return true;
+    }
+    return waitForDocumentConnected(document, DOCUMENT_RECONNECT_TIMEOUT_MS);
+  } catch (error) {
+    console.warn('[Sidekick] Failed to restart synced document before retrying write transaction.', error);
+    return false;
+  }
 }
 
 function waitForDocumentConnected(document: SyncedDocument, timeoutMs: number): Promise<boolean> {
@@ -861,13 +945,14 @@ function normalizeLocation(value: unknown): NexusLocation | undefined {
   const location = value as { entityId?: unknown; fieldIndex?: unknown };
   if (typeof location.entityId !== 'string' || location.entityId.length === 0) return undefined;
 
-  if (!Array.isArray(location.fieldIndex)) {
-    location.fieldIndex = [];
-  } else {
-    location.fieldIndex = location.fieldIndex.filter((entry): entry is number => typeof entry === 'number');
-  }
+  const fieldIndex = Array.isArray(location.fieldIndex)
+    ? location.fieldIndex.filter((entry): entry is number => typeof entry === 'number')
+    : [];
 
-  return value as NexusLocation;
+  return {
+    entityId: location.entityId,
+    fieldIndex
+  } as unknown as NexusLocation;
 }
 
 function resolveSocketLocation(value: unknown): NexusLocation | undefined {

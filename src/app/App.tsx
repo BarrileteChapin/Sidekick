@@ -286,7 +286,12 @@ export function App() {
         const usedTrackIds = new Set<string>();
         const distributedTargets: string[] = [];
         let createdCount = 0;
-        let autoCreateUnavailable = false;
+        const isStaticDeployment = import.meta.env.VITE_STATIC_DEPLOYMENT === 'true'
+          || (typeof window !== 'undefined' && window.location.hostname.toLowerCase().endsWith('github.io'));
+        let autoCreateUnavailable = isStaticDeployment;
+        if (autoCreateUnavailable && services.nexus.createSuggestedInstrument) {
+          addAction('Static deployment detected: skipping auto-creation of new instrument lanes for insertion.');
+        }
 
         for (const track of activeTracks) {
           const expectedInstrumentSlug = style.instruments?.[track.role];
