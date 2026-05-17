@@ -68,13 +68,28 @@ describe('AudiotoolSdkNexusClient pointer helpers', () => {
     });
   });
 
-  it('prefers an existing entity location over a synthesized root pointer', () => {
+  it('preserves a normalized entity location when it matches the target entity id', () => {
     const existingLocation = {
       entityId: 'entity-123',
       fieldIndex: [7]
     } as unknown as Parameters<typeof __testing.locationOrEntityPointer>[0];
 
-    expect(__testing.locationOrEntityPointer(existingLocation, 'fallback-id', 'existing')).toBe(existingLocation);
+    expect(__testing.locationOrEntityPointer(existingLocation, 'entity-123', 'existing')).toEqual({
+      entityId: 'entity-123',
+      fieldIndex: [7]
+    });
+  });
+
+  it('falls back to a synthesized root pointer when the provided location targets a different entity id', () => {
+    const existingLocation = {
+      entityId: 'entity-123',
+      fieldIndex: [7]
+    } as unknown as Parameters<typeof __testing.locationOrEntityPointer>[0];
+
+    expect(__testing.locationOrEntityPointer(existingLocation, 'fallback-id', 'existing')).toEqual({
+      entityId: 'fallback-id',
+      fieldIndex: []
+    });
   });
 
   it('throws when entity id is missing for root pointer conversion', () => {

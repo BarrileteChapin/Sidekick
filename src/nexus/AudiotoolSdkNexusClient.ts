@@ -633,8 +633,12 @@ function pointerFromEntityId(entityId: string, context: string): NexusLocation {
   } as unknown as NexusLocation;
 }
 
-function locationOrEntityPointer(location: NexusLocation | undefined, entityId: string, context: string): NexusLocation {
-  return location ?? pointerFromEntityId(entityId, context);
+function locationOrEntityPointer(location: unknown, entityId: string, context: string): NexusLocation {
+  const normalized = normalizePointerLocation(location);
+  if (normalized && normalized.entityId === entityId) {
+    return normalized as unknown as NexusLocation;
+  }
+  return pointerFromEntityId(entityId, context);
 }
 
 function describePointerShape(location: unknown): {
