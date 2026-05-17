@@ -7,7 +7,10 @@ describe('Audiotool SDK audio routing', () => {
       audioOutput: {
         location: { entityId: 'device-1', schemaPath: '/bassline/audioOutput' }
       }
-    })).toEqual({ entityId: 'device-1', schemaPath: '/bassline/audioOutput' });
+    })).toEqual({
+      fieldName: 'audioOutput',
+      location: { entityId: 'device-1', schemaPath: '/bassline/audioOutput' }
+    });
   });
 
   it('falls back to mainOutput for machiniste-style devices', () => {
@@ -15,7 +18,10 @@ describe('Audiotool SDK audio routing', () => {
       mainOutput: {
         location: { entityId: 'device-1', schemaPath: '/machiniste/mainOutput' }
       }
-    })).toEqual({ entityId: 'device-1', schemaPath: '/machiniste/mainOutput' });
+    })).toEqual({
+      fieldName: 'mainOutput',
+      location: { entityId: 'device-1', schemaPath: '/machiniste/mainOutput' }
+    });
   });
 
   it('returns undefined when the preset exposes no known output socket', () => {

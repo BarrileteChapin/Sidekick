@@ -285,7 +285,7 @@ export class AudiotoolSdkNexusClient implements NexusClient {
 
       const outputSocket = resolveDeviceAudioOutputLocation(device.fields as Record<string, unknown>);
       if (outputSocket) {
-        audioSocketField = outputSocket.schemaPath.split('/').filter(Boolean).at(-1);
+        audioSocketField = outputSocket.fieldName;
         const existingChannelCount = transaction.entities.ofTypes('mixerChannel').get().length;
         const mixerChannel = transaction.create('mixerChannel', {
           displayParameters: {
@@ -294,7 +294,7 @@ export class AudiotoolSdkNexusClient implements NexusClient {
           }
         });
         transaction.create('desktopAudioCable', {
-          fromSocket: outputSocket,
+          fromSocket: outputSocket.location,
           toSocket: mixerChannel.fields.audioInput.location
         });
       }
@@ -636,11 +636,14 @@ function beatsToTicks(beats: number): number {
   return Math.round(beats * Ticks.Beat);
 }
 
-export function resolveDeviceAudioOutputLocation(fields: Record<string, unknown>): NexusLocation | undefined {
+export function resolveDeviceAudioOutputLocation(fields: Record<string, unknown>): { fieldName: string; location: NexusLocation } | undefined {
   for (const fieldName of DEVICE_AUDIO_OUTPUT_FIELDS) {
     const field = fields[fieldName];
     if (hasSocketLocation(field)) {
-      return field.location;
+      return {
+        fieldName,
+        location: field.location
+      };
     }
   }
   return undefined;
