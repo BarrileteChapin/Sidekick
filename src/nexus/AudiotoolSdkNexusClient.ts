@@ -187,7 +187,7 @@ export class AudiotoolSdkNexusClient implements NexusClient {
     });
 
     const insertedRegionIds = new Set(insertedRegions.map((region) => region.regionId));
-    await verifyInsertedRegionsAfterSync(this.document, insertedRegionIds);
+    await verifyInsertedRegionsAfterSync(this.document, insertedRegions);
     const noteRegions = this.document.queryEntities.ofTypes('noteRegion').get();
     const visibleRegions = noteRegions.filter((region) => insertedRegionIds.has(region.id)).length;
     if (visibleRegions !== insertedRegions.length) {
@@ -294,6 +294,8 @@ export class AudiotoolSdkNexusClient implements NexusClient {
         });
       }
     });
+
+    await verifyCreatedNoteTracksAfterSync(this.document, new Set([createdTrackId]));
 
     return {
       id: createdTrackId,
@@ -470,6 +472,8 @@ type MidiInsertTransaction = Parameters<SyncedDocument['modify']>[0] extends (tr
 
 type InsertedRegionSummary = {
   regionId: string;
+  collectionId: string;
+  expectedNoteCount: number;
 };
 
 function getNoteTracks(document: SyncedDocument): NoteTrackTarget[] {
@@ -517,7 +521,9 @@ function insertGeneratedTrack(
   });
 
   return {
-    regionId: noteRegion.id
+    regionId: noteRegion.id,
+    collectionId: collection.id,
+    expectedNoteCount: generatedTrack.notes.length
   };
 }
 
@@ -535,7 +541,8 @@ function getGeneratedTrackLengthBeats(track: GeneratedMidiTrack, fallbackBeats: 
   return Math.max(...track.notes.map((note) => note.startBeat + note.durationBeats), fallbackBeats);
 }
 
-async function verifyInsertedRegionsAfterSync(document: SyncedDocument, insertedRegionIds: ReadonlySet<string>): Promise<void> {
+async function verifyInsertedRegionsAfterSync(document: SyncedDocument, insertedRegions: readonly InsertedRegionSummary[]): Promise<void> {
+  const insertedRegionIds = new Set(insertedRegions.map((region) => region.regionId));
   let elapsedMs = 0;
   for (const targetMs of [350, 1200]) {
     await delay(targetMs - elapsedMs);
@@ -553,11 +560,49 @@ async function verifyInsertedRegionsAfterSync(document: SyncedDocument, inserted
           : `Audiotool only kept ${visibleCount} of ${insertedRegionIds.size} inserted MIDI region(s) after backend reconciliation.`
       );
     }
+
+    const visibleNoteCount = countInsertedNotes(document, new Set(insertedRegions.map((region) => region.collectionId)));
+    const expectedNoteCount = insertedRegions.reduce((sum, region) => sum + region.expectedNoteCount, 0);
+    if (visibleNoteCount !== expectedNoteCount) {
+      throw new Error(
+        visibleNoteCount === 0
+          ? 'Audiotool created the target tracks, but the inserted MIDI notes were dropped during backend reconciliation. This usually means the new tracks were still settling or the write transaction was only partially accepted upstream.'
+          : `Audiotool only kept ${visibleNoteCount} of ${expectedNoteCount} inserted note event(s) after backend reconciliation.`
+      );
+    }
+  }
+}
+
+async function verifyCreatedNoteTracksAfterSync(document: SyncedDocument, trackIds: ReadonlySet<string>): Promise<void> {
+  let elapsedMs = 0;
+  for (const targetMs of [250, 900]) {
+    await delay(targetMs - elapsedMs);
+    elapsedMs = targetMs;
+
+    if (!document.connected.getValue()) {
+      throw new Error('Audiotool sync dropped while confirming the new instrument track. Re-sync the project and try again.');
+    }
+
+    const visibleCount = getNoteTracks(document).filter((track) => trackIds.has(track.id)).length;
+    if (visibleCount !== trackIds.size) {
+      throw new Error(
+        visibleCount === 0
+          ? 'Audiotool rejected the newly created instrument track after backend reconciliation.'
+          : `Audiotool only kept ${visibleCount} of ${trackIds.size} newly created instrument track(s) after backend reconciliation.`
+      );
+    }
   }
 }
 
 function countInsertedRegions(document: SyncedDocument, insertedRegionIds: ReadonlySet<string>): number {
   return document.queryEntities.ofTypes('noteRegion').get().filter((region) => insertedRegionIds.has(region.id)).length;
+}
+
+function countInsertedNotes(document: SyncedDocument, collectionIds: ReadonlySet<string>): number {
+  return document.queryEntities.ofTypes('note').get().filter((note) => {
+    const collection = note.fields.collection.value;
+    return isLocationLike(collection) && collectionIds.has(collection.entityId);
+  }).length;
 }
 
 function delay(ms: number): Promise<void> {
