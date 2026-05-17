@@ -39,6 +39,8 @@ jobs:
         env:
           VITE_BASE_PATH: /Sidekick/
           VITE_STATIC_DEPLOYMENT: "true"
+          VITE_AUDIOTOOL_CLIENT_ID: cd327b4a-a428-4d43-900a-53fb2875b380
+          VITE_AUDIOTOOL_REDIRECT_URL: https://barriletechapin.github.io/Sidekick/
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5

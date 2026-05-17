@@ -75,6 +75,12 @@ After deployment, your app will be available at:
 
 - `https://barriletechapin.github.io/Sidekick/`
 
+Audiotool OAuth on deployed site:
+
+- The deployed build pre-fills Audiotool client ID from workflow config.
+- Redirect URL must match exactly: `https://barriletechapin.github.io/Sidekick/`.
+- In Audiotool Developer app settings, register the same redirect URL.
+
 ## Gemini On Static Hosting (for testers)
 
 GitHub Pages is static, so there is no server-side `/api/gemini/*` proxy there.

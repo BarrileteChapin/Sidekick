@@ -419,6 +419,15 @@ function readStoredProjectUrl(): string | null {
 }
 
 function getDefaultRedirectUrl(): string {
+  const redirectFromEnv = import.meta.env.VITE_AUDIOTOOL_REDIRECT_URL?.trim();
+  if (redirectFromEnv) {
+    return redirectFromEnv;
+  }
+
+  if (typeof window !== 'undefined') {
+    return new URL(import.meta.env.BASE_URL ?? '/', window.location.origin).toString();
+  }
+
   return 'http://127.0.0.1:5173/';
 }
 

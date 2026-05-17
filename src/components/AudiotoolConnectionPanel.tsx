@@ -22,6 +22,7 @@ export function AudiotoolConnectionPanel({
   const [clientId, setClientId] = useState('');
   const [isWorking, setIsWorking] = useState(false);
   const isMockMode = !state || state.mode === 'mock';
+  const suggestedRedirectUrl = getSuggestedRedirectUrl(state);
 
   async function run(action: () => Promise<void> | void) {
     setIsWorking(true);
@@ -38,7 +39,7 @@ export function AudiotoolConnectionPanel({
       <>
         {includeRuntimeSource ? <p>{runtimeSource}</p> : null}
         <p className="subtle">
-          Register an app at developer.audiotool.com, use redirect URI http://127.0.0.1:5173/, then paste the client ID here.
+          Register an app at developer.audiotool.com with redirect URI <strong>{suggestedRedirectUrl}</strong>, then paste the client ID.
         </p>
         <div className="field">
           <label htmlFor="audiotool-client-id">Audiotool client ID</label>
@@ -157,4 +158,18 @@ export function AudiotoolConnectionPanel({
       {renderConnectedControls(state, true)}
     </section>
   );
+}
+
+function getSuggestedRedirectUrl(state: NexusConnectionState | null): string {
+  const redirectFromState = state?.redirectUrl?.trim();
+  if (redirectFromState) return redirectFromState;
+
+  const redirectFromEnv = import.meta.env.VITE_AUDIOTOOL_REDIRECT_URL?.trim();
+  if (redirectFromEnv) return redirectFromEnv;
+
+  if (typeof window !== 'undefined') {
+    return new URL(import.meta.env.BASE_URL ?? '/', window.location.origin).toString();
+  }
+
+  return 'http://127.0.0.1:5173/';
 }

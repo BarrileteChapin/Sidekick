@@ -81,5 +81,19 @@ function storeClientId(clientId: string): void {
 }
 
 function getRedirectUrl(optionRedirectUrl: string | undefined): string {
-  return optionRedirectUrl ?? import.meta.env.VITE_AUDIOTOOL_REDIRECT_URL ?? 'http://127.0.0.1:5173/';
+  const redirectFromOption = optionRedirectUrl?.trim();
+  if (redirectFromOption) return redirectFromOption;
+
+  const redirectFromEnv = import.meta.env.VITE_AUDIOTOOL_REDIRECT_URL?.trim();
+  if (redirectFromEnv) return redirectFromEnv;
+
+  if (typeof window !== 'undefined') {
+    return getRuntimeRedirectUrl();
+  }
+
+  return 'http://127.0.0.1:5173/';
+}
+
+function getRuntimeRedirectUrl(): string {
+  return new URL(import.meta.env.BASE_URL ?? '/', window.location.origin).toString();
 }
