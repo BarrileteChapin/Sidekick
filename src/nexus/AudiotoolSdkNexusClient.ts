@@ -16,6 +16,9 @@ type NexusEntityLike = {
 const DEVICE_AUDIO_OUTPUT_FIELDS = ['audioOutput', 'mainOutput', 'masterOutput'] as const;
 
 const storedProjectUrlKey = 'sidekick:audiotool-project-url';
+const PRESET_LOOKUP_TIMEOUT_MS = 10000;
+const WRITE_TRANSACTION_TIMEOUT_MS = 12000;
+const POST_WRITE_VERIFICATION_TIMEOUT_MS = 4000;
 
 export class AudiotoolSdkNexusClient implements NexusClient {
   private authResult: BrowserAuthResult | null = null;
@@ -130,74 +133,93 @@ export class AudiotoolSdkNexusClient implements NexusClient {
   }
 
   async insertMidi(midi: GeneratedMidi, options: MidiInsertOptions = {}): Promise<void> {
-    const document = await this.getWritableDocument('insert MIDI');
+    try {
+      const document = await this.getWritableDocument('insert MIDI');
 
-    const noteTracks = getNoteTracks(document);
-    const explicitTarget = options.targetTrackId ? noteTracks.find((track) => track.id === options.targetTrackId) : null;
-    // Preserve index positions: keep undefined slots so each generated track
-    // maps to its intended target, even if some IDs weren't found yet.
-    const distributedTargetIds = options.targetTrackIds ?? [];
-    const distributedTargets: (NoteTrackTarget | undefined)[] = distributedTargetIds
-      .map((id) => noteTracks.find((track) => track.id === id));
-    if (noteTracks.length === 0) {
-      throw new Error('No Audiotool note track was found. Create/select an instrument track first, then refresh Sidekick.');
-    }
+      const noteTracks = getNoteTracks(document);
+      const explicitTarget = options.targetTrackId ? noteTracks.find((track) => track.id === options.targetTrackId) : null;
+      // Preserve index positions: keep undefined slots so each generated track
+      // maps to its intended target, even if some IDs weren't found yet.
+      const distributedTargetIds = options.targetTrackIds ?? [];
+      const distributedTargets: (NoteTrackTarget | undefined)[] = distributedTargetIds
+        .map((id) => noteTracks.find((track) => track.id === id));
+      if (noteTracks.length === 0) {
+        throw new Error('No Audiotool note track was found. Create/select an instrument track first, then refresh Sidekick.');
+      }
 
-    const generatedTracks = midi.tracks.filter((track) => track.notes.length > 0);
-    if (generatedTracks.length === 0) {
-      throw new Error('Generated MIDI has no notes to insert.');
-    }
-    const startBeat = Math.max(0, options.startBeat ?? 0);
-    const maxTrackLengthBeats = Math.max(...generatedTracks.map((track) => getGeneratedTrackLengthBeats(track, midi.request.bars * 4)));
-    const requiredDurationTicks = beatsToTicks(startBeat + maxTrackLengthBeats);
+      const generatedTracks = midi.tracks.filter((track) => track.notes.length > 0);
+      if (generatedTracks.length === 0) {
+        throw new Error('Generated MIDI has no notes to insert.');
+      }
+      const startBeat = Math.max(0, options.startBeat ?? 0);
+      const maxTrackLengthBeats = Math.max(...generatedTracks.map((track) => getGeneratedTrackLengthBeats(track, midi.request.bars * 4)));
+      const requiredDurationTicks = beatsToTicks(startBeat + maxTrackLengthBeats);
 
-    // Track which noteTracks are already claimed so we don't double-assign.
-    const claimedNoteTrackIds = new Set<string>();
-    distributedTargets.forEach((target) => { if (target) claimedNoteTrackIds.add(target.id); });
-
-    const insertedRegions = await document.modify((transaction) => {
-      ensureTimelineDuration(transaction, requiredDurationTicks);
-      const regions: InsertedRegionSummary[] = [];
-      generatedTracks.forEach((generatedTrack, index) => {
-        let noteTrack: NoteTrackTarget;
-        if (options.trackMode === 'selected') {
-          noteTrack = explicitTarget ?? noteTracks[0];
-        } else {
-          const distributed = distributedTargets[index];
-          if (distributed) {
-            noteTrack = distributed;
-          } else if (explicitTarget) {
-            noteTrack = explicitTarget;
-          } else {
-            // Last resort: pick the first unclaimed track, then fall back to noteTracks[0].
-            const unclaimed = noteTracks.find((t) => !claimedNoteTrackIds.has(t.id));
-            noteTrack = unclaimed ?? noteTracks[0];
-            if (noteTrack) claimedNoteTrackIds.add(noteTrack.id);
-            console.warn(
-              `[Sidekick] No distributed target for generated track "${generatedTrack.name}" (${generatedTrack.role}), ` +
-              `falling back to "${noteTrack.id}". This may indicate a sync delay after creating instruments.`
-            );
-          }
-        }
-        regions.push(insertGeneratedTrack(transaction, midi, generatedTrack, noteTrack, startBeat));
-      });
-      return regions;
-    });
-
-    const insertedRegionIds = new Set(insertedRegions.map((region) => region.regionId));
-    await verifyInsertedRegionsAfterSync(document, insertedRegions);
-    const noteRegions = document.queryEntities.ofTypes('noteRegion').get();
-    const visibleRegions = noteRegions.filter((region) => insertedRegionIds.has(region.id)).length;
-    if (visibleRegions !== insertedRegions.length) {
-      console.warn(
-        `[Sidekick] Insert transaction committed ${insertedRegions.length} region(s), but only ${visibleRegions} ` +
-        'can be queried immediately. If this persists, refresh project sync.'
+      console.info(
+        `[Sidekick] Starting MIDI insert for ${generatedTracks.length} track(s). ` +
+        `Mode=${options.trackMode ?? 'distribute'}, connected=${document.connected.getValue()}.`
       );
+
+      // Track which noteTracks are already claimed so we don't double-assign.
+      const claimedNoteTrackIds = new Set<string>();
+      distributedTargets.forEach((target) => { if (target) claimedNoteTrackIds.add(target.id); });
+
+      const insertedRegions = await withTimeout(
+        document.modify((transaction) => {
+          ensureTimelineDuration(transaction, requiredDurationTicks);
+          const regions: InsertedRegionSummary[] = [];
+          generatedTracks.forEach((generatedTrack, index) => {
+            let noteTrack: NoteTrackTarget;
+            if (options.trackMode === 'selected') {
+              noteTrack = explicitTarget ?? noteTracks[0];
+            } else {
+              const distributed = distributedTargets[index];
+              if (distributed) {
+                noteTrack = distributed;
+              } else if (explicitTarget) {
+                noteTrack = explicitTarget;
+              } else {
+                // Last resort: pick the first unclaimed track, then fall back to noteTracks[0].
+                const unclaimed = noteTracks.find((t) => !claimedNoteTrackIds.has(t.id));
+                noteTrack = unclaimed ?? noteTracks[0];
+                if (noteTrack) claimedNoteTrackIds.add(noteTrack.id);
+                console.warn(
+                  `[Sidekick] No distributed target for generated track "${generatedTrack.name}" (${generatedTrack.role}), ` +
+                  `falling back to "${noteTrack.id}". This may indicate a sync delay after creating instruments.`
+                );
+              }
+            }
+            regions.push(insertGeneratedTrack(transaction, midi, generatedTrack, noteTrack, startBeat));
+          });
+          return regions;
+        }),
+        WRITE_TRANSACTION_TIMEOUT_MS,
+        'Timed out while submitting the MIDI insert to Audiotool. The synced document is not accepting write transactions.'
+      );
+
+      console.info(`[Sidekick] MIDI insert transaction submitted with ${insertedRegions.length} region(s). Verifying sync...`);
+      const insertedRegionIds = new Set(insertedRegions.map((region) => region.regionId));
+      await withTimeout(
+        verifyInsertedRegionsAfterSync(document, insertedRegions),
+        POST_WRITE_VERIFICATION_TIMEOUT_MS,
+        'Timed out while confirming the MIDI insert in Audiotool. The write may be stuck waiting on sync reconciliation.'
+      );
+      const noteRegions = document.queryEntities.ofTypes('noteRegion').get();
+      const visibleRegions = noteRegions.filter((region) => insertedRegionIds.has(region.id)).length;
+      if (visibleRegions !== insertedRegions.length) {
+        console.warn(
+          `[Sidekick] Insert transaction committed ${insertedRegions.length} region(s), but only ${visibleRegions} ` +
+          'can be queried immediately. If this persists, refresh project sync.'
+        );
+      }
+      console.info(
+        `[Sidekick] Inserted ${insertedRegions.length} MIDI region(s) at beat ${startBeat}. ` +
+        `Document online: ${document.connected.getValue()}.`
+      );
+    } catch (error) {
+      console.error('[Sidekick] MIDI insert failed.', error);
+      throw error;
     }
-    console.info(
-      `[Sidekick] Inserted ${insertedRegions.length} MIDI region(s) at beat ${startBeat}. ` +
-      `Document online: ${document.connected.getValue()}.`
-    );
   }
 
   async createAdditionalNoteTracks(count: number): Promise<number> {
@@ -240,75 +262,103 @@ export class AudiotoolSdkNexusClient implements NexusClient {
   }
 
   async createSuggestedInstrument(request: SuggestedInstrumentRequest): Promise<SessionTrack> {
-    const client = await this.getAuthenticatedClient();
-    const document = await this.getWritableDocument('add instruments');
+    try {
+      const client = await this.getAuthenticatedClient();
+      const document = await this.getWritableDocument('add instruments');
 
-    const presetSlug = request.audiotoolInstrumentSlug ?? chooseInstrumentSlug(request);
-    const preset = await fetchPreset(client, presetSlug);
-    const presetName = normalizePresetName(presetSlug);
-    const noteTracks = getNoteTracks(document);
-    const maxOrder = Math.max(...noteTracks.map((track) => track.orderAmongTracks ?? 0), 0);
-    let createdTrackId = '';
-    let audioSocketField: string | undefined;
-
-    await document.modify((transaction) => {
-      const device = transaction.createDeviceFromPreset(preset);
-      if ('displayName' in device.fields) {
-        transaction.update(device.fields.displayName, request.name);
-      }
-      if ('presetName' in device.fields) {
-        transaction.update(device.fields.presetName, presetName);
-      }
-      if ('positionX' in device.fields) {
-        transaction.update(device.fields.positionX, 600 + noteTracks.length * 80);
-      }
-      if ('positionY' in device.fields) {
-        transaction.update(device.fields.positionY, 300 + noteTracks.length * 80);
-      }
-
-      const noteTrack = transaction.create('noteTrack', {
-        player: device.location,
-        isEnabled: true,
-        orderAmongTracks: maxOrder + 1
-      });
-      createdTrackId = noteTrack.id;
-
-      const outputSocket = resolveDeviceAudioOutputLocation(device.fields as Record<string, unknown>);
-      if (outputSocket) {
-        audioSocketField = outputSocket.fieldName;
-        const existingChannelCount = transaction.entities.ofTypes('mixerChannel').get().length;
-        const mixerChannel = transaction.create('mixerChannel', {
-          displayParameters: {
-            displayName: request.name,
-            orderAmongStrips: existingChannelCount + 1
-          }
-        });
-        transaction.create('desktopAudioCable', {
-          fromSocket: outputSocket.location,
-          toSocket: mixerChannel.fields.audioInput.location
-        });
-      }
-    });
-
-    if (!audioSocketField) {
-      console.warn(
-        `[Sidekick] Created instrument "${request.name}" (${presetSlug}) without a known audio output socket. ` +
-        'Its note lane exists, but no mixer cable was added.'
+      const presetSlug = request.audiotoolInstrumentSlug ?? chooseInstrumentSlug(request);
+      console.info(
+        `[Sidekick] Starting instrument creation for "${request.name}" (${request.role}) ` +
+        `using preset "${presetSlug}". Connected=${document.connected.getValue()}.`
       );
+      const preset = await withTimeout(
+        fetchPreset(client, presetSlug),
+        PRESET_LOOKUP_TIMEOUT_MS,
+        `Timed out while resolving Audiotool preset "${presetSlug}". The preset lookup never completed.`
+      );
+      console.info(`[Sidekick] Resolved preset "${presetSlug}". Submitting instrument creation transaction...`);
+      const presetName = normalizePresetName(presetSlug);
+      const noteTracks = getNoteTracks(document);
+      const maxOrder = Math.max(...noteTracks.map((track) => track.orderAmongTracks ?? 0), 0);
+      let createdTrackId = '';
+      let audioSocketField: string | undefined;
+
+      await withTimeout(
+        document.modify((transaction) => {
+          const device = transaction.createDeviceFromPreset(preset);
+          if ('displayName' in device.fields) {
+            transaction.update(device.fields.displayName, request.name);
+          }
+          if ('presetName' in device.fields) {
+            transaction.update(device.fields.presetName, presetName);
+          }
+          if ('positionX' in device.fields) {
+            transaction.update(device.fields.positionX, 600 + noteTracks.length * 80);
+          }
+          if ('positionY' in device.fields) {
+            transaction.update(device.fields.positionY, 300 + noteTracks.length * 80);
+          }
+
+          const noteTrack = transaction.create('noteTrack', {
+            player: device.location,
+            isEnabled: true,
+            orderAmongTracks: maxOrder + 1
+          });
+          createdTrackId = noteTrack.id;
+
+          const outputSocket = resolveDeviceAudioOutputLocation(device.fields as Record<string, unknown>);
+          if (outputSocket) {
+            audioSocketField = outputSocket.fieldName;
+            const existingChannelCount = transaction.entities.ofTypes('mixerChannel').get().length;
+            const mixerChannel = transaction.create('mixerChannel', {
+              displayParameters: {
+                displayName: request.name,
+                orderAmongStrips: existingChannelCount + 1
+              }
+            });
+            transaction.create('desktopAudioCable', {
+              fromSocket: outputSocket.location,
+              toSocket: mixerChannel.fields.audioInput.location
+            });
+          }
+        }),
+        WRITE_TRANSACTION_TIMEOUT_MS,
+        `Timed out while creating the Audiotool instrument track "${request.name}". ` +
+        'The synced document is not accepting the transaction or the preset wiring is unsupported.'
+      );
+
+      console.info(
+        `[Sidekick] Instrument creation transaction submitted for "${request.name}" as track "${createdTrackId}". ` +
+        'Verifying sync...'
+      );
+      if (!audioSocketField) {
+        console.warn(
+          `[Sidekick] Created instrument "${request.name}" (${presetSlug}) without a known audio output socket. ` +
+          'Its note lane exists, but no mixer cable was added.'
+        );
+      }
+
+      await withTimeout(
+        verifyCreatedNoteTracksAfterSync(document, new Set([createdTrackId])),
+        POST_WRITE_VERIFICATION_TIMEOUT_MS,
+        `Timed out while confirming the new Audiotool instrument track "${request.name}" after the transaction was sent.`
+      );
+      console.info(`[Sidekick] Confirmed created instrument track "${createdTrackId}".`);
+
+      return {
+        id: createdTrackId,
+        name: request.name,
+        role: request.role,
+        hasMidi: true,
+        hasAudio: false,
+        instrumentName: presetSlug,
+        clipCount: 0,
+        tags: ['noteTrack', 'sidekick-created', ...request.tags]
+      };
+    } catch (error) {
+      console.error(`[Sidekick] Instrument creation failed for "${request.name}".`, error);
+      throw error;
     }
-
-    await verifyCreatedNoteTracksAfterSync(document, new Set([createdTrackId]));
-
-    return {
-      id: createdTrackId,
-      name: request.name,
-      role: request.role,
-      hasMidi: true,
-      hasAudio: false,
-      instrumentName: presetSlug,
-      clipCount: 0,
-      tags: ['noteTrack', 'sidekick-created', ...request.tags]
-    };
   }
 
   private async ensureAuth(): Promise<void> {
@@ -632,7 +682,7 @@ function countInsertedNotes(document: SyncedDocument, collectionIds: ReadonlySet
 }
 
 function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
+  return new Promise((resolve) => globalThis.setTimeout(resolve, ms));
 }
 
 function waitForDocumentConnected(document: SyncedDocument, timeoutMs: number): Promise<boolean> {
@@ -641,16 +691,32 @@ function waitForDocumentConnected(document: SyncedDocument, timeoutMs: number): 
   }
 
   return new Promise((resolve) => {
-    const timeoutId = window.setTimeout(() => {
+    const timeoutId = globalThis.setTimeout(() => {
       subscription.terminate();
       resolve(false);
     }, timeoutMs);
     const subscription = document.connected.subscribe((connected) => {
       if (!connected) return;
-      window.clearTimeout(timeoutId);
+      globalThis.clearTimeout(timeoutId);
       subscription.terminate();
       resolve(true);
     }, true);
+  });
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timeoutId = globalThis.setTimeout(() => reject(new Error(message)), timeoutMs);
+    promise.then(
+      (value) => {
+        globalThis.clearTimeout(timeoutId);
+        resolve(value);
+      },
+      (error) => {
+        globalThis.clearTimeout(timeoutId);
+        reject(error);
+      }
+    );
   });
 }
 
