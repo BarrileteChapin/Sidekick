@@ -66,10 +66,10 @@ How it works:
 2. GitHub Actions builds the app with `VITE_BASE_PATH=/Sidekick/`.
 3. The `dist` output is deployed to GitHub Pages.
 
-One-time repository setting:
+Repository setup note:
 
-- In GitHub, go to **Settings -> Pages**.
-- Set **Source** to **GitHub Actions**.
+- The workflow tries to auto-enable GitHub Pages for this repository.
+- If your org/repo permissions block that step, set it manually in **Settings -> Pages** with **Source = GitHub Actions**.
 
 After deployment, your app will be available at:
 
