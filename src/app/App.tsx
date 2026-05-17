@@ -6,11 +6,13 @@ import { loadProfile } from '../core/profileStore';
 import type { GeneratedMidi } from '../generation/types';
 import { ChatPanel, type ChatDraft } from '../components/ChatPanel';
 import { AudiotoolConnectionPanel } from '../components/AudiotoolConnectionPanel';
+import { GeminiConfigPanel } from '../components/GeminiConfigPanel';
 import { GeneratedMidiCard } from '../components/GeneratedMidiCard';
 import { GenerateMusicPanel, type GenerateMusicState } from '../components/GenerateMusicPanel';
 import { NextStepsPanel } from '../components/NextStepsPanel';
 import { SessionSummary } from '../components/SessionSummary';
 import { createAppServices, type AppServices } from './providers';
+import { clearStoredGeminiApiKey, storeGeminiApiKey } from '../gemini/userKeyStore';
 import { findCompatibleNoteTrack } from './trackRouting';
 import type { MidiInsertOptions, NexusConnectionState } from '../nexus/NexusClient';
 import type { NextStepsAnalysis } from '../nextSteps/schemas';
@@ -43,6 +45,7 @@ export function App() {
     bars: 8,
     outputMode: 'motif_chords_bass'
   });
+  const brandIconUrl = `${import.meta.env.BASE_URL}sidekick-favicon.png`;
 
   const refreshSession = useCallback(async () => {
     const state = (await services.nexus.getConnectionState?.()) ?? null;
@@ -60,6 +63,18 @@ export function App() {
     setConnectionState(null);
     setAnalysis(null);
     setServices(createAppServices({ audiotoolClientId: clientId }));
+  }, []);
+
+  const saveGeminiApiKey = useCallback((apiKey: string) => {
+    storeGeminiApiKey(apiKey);
+    setStatus('Gemini API key saved for this browser.');
+    setServices(createAppServices({ geminiApiKey: apiKey }));
+  }, []);
+
+  const clearGeminiApiKey = useCallback(() => {
+    clearStoredGeminiApiKey();
+    setStatus('Gemini API key removed from this browser.');
+    setServices(createAppServices());
   }, []);
 
   useEffect(() => {
@@ -327,7 +342,7 @@ export function App() {
       <main className="app-shell app-dashboard">
         <section className="dashboard-top">
           <section className="card dashboard-brand-card" aria-label="Sidekick overview">
-            <img className="dashboard-brand-icon" src="/sidekick-favicon.png" alt="Sidekick logo" width={56} height={56} />
+            <img className="dashboard-brand-icon" src={brandIconUrl} alt="Sidekick logo" width={56} height={56} />
             <p className="app-eyebrow mono">Audiotool NEXUS</p>
             <h1 className="app-title">Sidekick</h1>
             <div className="pill-row">
@@ -361,18 +376,30 @@ export function App() {
         <section className={`dashboard-body dashboard-layout-${layoutPreset}`} aria-label="Customizable dashboard cards">
           <aside className="dashboard-left-rail stack">
             <section className="card" aria-labelledby="session-assistant-title">
-              <h2 id="session-assistant-title" className="dashboard-header-title">
-                Session Assistant
-              </h2>
-              <p className="status-bar">{status}</p>
-              {actionLog.length > 0 ? (
-                <ul className="action-log mono" aria-label="Recent Sidekick actions">
-                  {actionLog.map((entry) => (
-                    <li key={entry.id}>{entry.message}</li>
-                  ))}
-                </ul>
-              ) : null}
+              <details className="card-dropdown" open>
+                <summary className="card-dropdown-toggle">
+                  <h2 id="session-assistant-title" className="dashboard-header-title">
+                    Session Assistant
+                  </h2>
+                </summary>
+                <div className="card-dropdown-content">
+                  <p className="status-bar">{status}</p>
+                  {actionLog.length > 0 ? (
+                    <ul className="action-log mono" aria-label="Recent Sidekick actions">
+                      {actionLog.map((entry) => (
+                        <li key={entry.id}>{entry.message}</li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </div>
+              </details>
             </section>
+            <GeminiConfigPanel
+              mode={services.geminiMode}
+              hasApiKey={services.hasGeminiApiKey}
+              onSaveApiKey={saveGeminiApiKey}
+              onClearApiKey={clearGeminiApiKey}
+            />
             <ChatPanel
               key={chatDraft?.id ?? 'default-chat-draft'}
               latestPlan={chatPlan}

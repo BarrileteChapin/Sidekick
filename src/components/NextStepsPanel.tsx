@@ -94,7 +94,7 @@ function NextStepsResult({
           <summary className="next-insights-toggle">
             <div className="result-panel-header">
               <span className="mono">Insights</span>
-              <h3 id="next-insights-title">What Gemini noticed</h3>
+              <h3 id="next-insights-title">What Sidekick noted</h3>
             </div>
           </summary>
           <div className="next-insights-content">

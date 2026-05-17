@@ -642,6 +642,46 @@ button:disabled {
   cursor: pointer;
 }
 
+.card-dropdown {
+  display: grid;
+  gap: var(--space-sm);
+}
+
+.card-dropdown-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  list-style: none;
+  cursor: pointer;
+}
+
+.card-dropdown-toggle::marker {
+  content: '';
+}
+
+.card-dropdown-toggle::-webkit-details-marker {
+  display: none;
+}
+
+.card-dropdown-toggle::after {
+  content: '▾';
+  color: var(--color-muted);
+  font-size: 0.95rem;
+  transition: transform 0.16s ease;
+}
+
+.card-dropdown:not([open]) .card-dropdown-toggle::after {
+  transform: rotate(-90deg);
+}
+
+.card-dropdown-content {
+  display: grid;
+  gap: var(--space-sm);
+  padding-top: var(--space-sm);
+  border-top: 1px dashed rgba(31, 41, 55, 0.18);
+}
+
 .next-steps-menu {
   display: grid;
   gap: var(--space-lg);

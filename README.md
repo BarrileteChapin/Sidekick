@@ -56,6 +56,41 @@ npm run dev
 
 3. Open the URL shown in terminal (usually `http://localhost:5173`).
 
+## Deploy To GitHub Pages (online branch)
+
+This repo includes a workflow at `.github/workflows/deploy-pages.yml`.
+
+How it works:
+
+1. Push changes to branch `online`.
+2. GitHub Actions builds the app with `VITE_BASE_PATH=/Sidekick/`.
+3. The `dist` output is deployed to GitHub Pages.
+
+One-time repository setting:
+
+- In GitHub, go to **Settings -> Pages**.
+- Set **Source** to **GitHub Actions**.
+
+After deployment, your app will be available at:
+
+- `https://barriletechapin.github.io/Sidekick/`
+
+## Gemini On Static Hosting (for testers)
+
+GitHub Pages is static, so there is no server-side `/api/gemini/*` proxy there.
+
+To test Gemini features online:
+
+1. Open the app.
+2. Use the **Gemini Access** panel.
+3. Paste a personal Gemini API key and click **Save key**.
+
+Notes:
+
+- The key is stored only in that browser (local storage).
+- Use **Remove key** to clear it.
+- Without a key, chat falls back to local planning and Next Steps cloud analysis is disabled.
+
 ## Optional: Connect to Audiotool
 
 If you want full Audiotool integration, create a local `.env` based on `.env.example` and set your own values.

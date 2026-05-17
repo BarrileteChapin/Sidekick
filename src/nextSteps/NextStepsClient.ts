@@ -6,6 +6,14 @@ export interface NextStepsClient {
   analyzeReference(file: File): Promise<NextStepsAnalysis>;
 }
 
+export class DisabledNextStepsClient implements NextStepsClient {
+  constructor(private readonly reason: string) {}
+
+  async analyzeReference(): Promise<NextStepsAnalysis> {
+    throw new Error(this.reason);
+  }
+}
+
 export class ProxyNextStepsClient implements NextStepsClient {
   constructor(private readonly endpoint = '/api/gemini/next-steps') {}
 
