@@ -172,7 +172,18 @@ export class AudiotoolSdkNexusClient implements NexusClient {
             );
           }
         }
-        insertGeneratedTrack(transaction, midi, generatedTrack, noteTrack, options.startBeat ?? 0);
+        try {
+          insertGeneratedTrack(transaction, midi, generatedTrack, noteTrack, options.startBeat ?? 0);
+        } catch (error) {
+          console.error('[Sidekick] insertGeneratedTrack failed for assigned note track.', {
+            generatedTrack: generatedTrack.name,
+            role: generatedTrack.role,
+            noteTrackId: noteTrack.id,
+            startBeat: options.startBeat ?? 0,
+            error
+          });
+          throw error;
+        }
       });
     });
   }
@@ -187,7 +198,7 @@ export class AudiotoolSdkNexusClient implements NexusClient {
     if (!baseTrack?.player) {
       throw new Error('No source instrument note track was found. Create an instrument track in Audiotool first, then refresh Sidekick.');
     }
-    const basePlayer = toPointerLocation(baseTrack.player, `noteTrack:${baseTrack.id}:player`);
+    const basePlayer = pointerFromEntityId(baseTrack.player.entityId, `noteTrack:${baseTrack.id}:player`);
 
     const amount = Math.max(0, Math.min(8, Math.floor(count)));
     if (amount === 0) return 0;
@@ -248,7 +259,7 @@ export class AudiotoolSdkNexusClient implements NexusClient {
         transaction.update(device.fields.positionY, 300 + noteTracks.length * 80);
       }
 
-      const deviceLocation = toPointerLocation(device.location, `device:${request.name}`);
+      const deviceLocation = pointerFromEntityId(device.id, `device:${request.name}`);
       const noteTrack = transaction.create('noteTrack', {
         player: deviceLocation,
         isEnabled: true,
@@ -443,7 +454,6 @@ function getDefaultRedirectUrl(): string {
 
 type NoteTrackTarget = {
   id: string;
-  location: PointerLocation;
   player?: PointerLocation;
   orderAmongTracks?: number;
 };
@@ -457,21 +467,11 @@ type MidiInsertTransaction = Parameters<SyncedDocument['modify']>[0] extends (tr
 
 function getNoteTracks(document: SyncedDocument): NoteTrackTarget[] {
   return document.queryEntities.ofTypes('noteTrack').get()
-    .map((track): NoteTrackTarget | null => {
-      const location = normalizePointerLocation(track.location);
-      if (!location) {
-        console.warn('[Sidekick] Skipping noteTrack with invalid location pointer.', { trackId: track.id });
-        return null;
-      }
-
-      return {
-        id: track.id,
-        location,
-        player: normalizePointerLocation(track.fields.player.value),
-        orderAmongTracks: track.fields.orderAmongTracks.value
-      };
-    })
-    .filter((track): track is NoteTrackTarget => track !== null);
+    .map((track): NoteTrackTarget => ({
+      id: track.id,
+      player: normalizePointerLocation(track.fields.player.value),
+      orderAmongTracks: track.fields.orderAmongTracks.value
+    }));
 }
 
 function insertGeneratedTrack(
@@ -485,8 +485,8 @@ function insertGeneratedTrack(
     Math.max(...generatedTrack.notes.map((note) => note.startBeat + note.durationBeats), midi.request.bars * 4)
   );
   const collection = transaction.create('noteCollection', {});
-  const collectionLocation = toPointerLocation(collection.location, 'noteCollection');
-  const noteTrackLocation = toPointerLocation(noteTrack.location, `noteTrack:${noteTrack.id}`);
+  const collectionLocation = pointerFromEntityId(collection.id, 'noteCollection');
+  const noteTrackLocation = pointerFromEntityId(noteTrack.id, `noteTrack:${noteTrack.id}`);
   console.debug('[Sidekick] DEBUG: insertGeneratedTrack pointers', {
     generatedTrack: generatedTrack.name,
     role: generatedTrack.role,
@@ -573,6 +573,17 @@ function toPointerLocation(location: unknown, context: string): NexusLocation {
     throw new Error(`Audiotool pointer "${context}" is missing or invalid.`);
   }
   return normalized as unknown as NexusLocation;
+}
+
+function pointerFromEntityId(entityId: string, context: string): NexusLocation {
+  if (typeof entityId !== 'string' || entityId.length === 0) {
+    throw new Error(`Audiotool entityId for "${context}" is missing or invalid.`);
+  }
+
+  return {
+    entityId,
+    fieldIndex: []
+  } as unknown as NexusLocation;
 }
 
 function describePointerShape(location: unknown): {
@@ -684,6 +695,7 @@ function chooseInstrumentSlug(request: SuggestedInstrumentRequest): string {
 export const __testing = {
   normalizePointerLocation,
   toPointerLocation,
+  pointerFromEntityId,
   resolveDeviceAudioOutputLocation,
   resolveSocketLocation,
   describePointerShape

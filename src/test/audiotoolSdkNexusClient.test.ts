@@ -61,6 +61,19 @@ describe('AudiotoolSdkNexusClient pointer helpers', () => {
     );
   });
 
+  it('creates a root pointer from entity id', () => {
+    expect(__testing.pointerFromEntityId('entity-123', 'root')).toEqual({
+      entityId: 'entity-123',
+      fieldIndex: []
+    });
+  });
+
+  it('throws when entity id is missing for root pointer conversion', () => {
+    expect(() => __testing.pointerFromEntityId('', 'root')).toThrow(
+      'Audiotool entityId for "root" is missing or invalid.'
+    );
+  });
+
   it('describes pointer shape for diagnostics', () => {
     expect(__testing.describePointerShape({ entityId: 'id', fieldIndex: [1] })).toEqual({
       entityId: 'id',
