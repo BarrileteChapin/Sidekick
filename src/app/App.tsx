@@ -198,6 +198,8 @@ export function App() {
       if ((plan.audiotoolActions?.length ?? 0) > 0) {
         await refreshSession();
       }
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Assistant action failed.');
     } finally {
       setIsChatting(false);
     }
@@ -588,7 +590,10 @@ const PRESET_REFERENCE_PATTERN = /^(?:presets\/)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f
 function sanitizeAutoCreateInstrumentSlug(instrumentSlug: string | undefined): string | undefined {
   const trimmed = instrumentSlug?.trim();
   if (!trimmed) return undefined;
-  return trimmed.toLowerCase().startsWith('presets/') || PRESET_REFERENCE_PATTERN.test(trimmed) ? undefined : trimmed;
+  if (PRESET_REFERENCE_PATTERN.test(trimmed) && !trimmed.toLowerCase().startsWith('presets/')) {
+    return `presets/${trimmed}`;
+  }
+  return trimmed;
 }
 
 function sanitizeAutoCreateInstrumentMap(

@@ -14,6 +14,8 @@ type NexusEntityLike = {
 };
 
 const DEVICE_AUDIO_OUTPUT_FIELDS = ['audioOutput', 'mainOutput', 'masterOutput'] as const;
+const INITIAL_SYNC_WAIT_MS = 2500;
+const RECONNECT_SYNC_WAIT_MS = 4000;
 
 const storedProjectUrlKey = 'sidekick:audiotool-project-url';
 
@@ -73,6 +75,7 @@ export class AudiotoolSdkNexusClient implements NexusClient {
     localStorage.setItem(storedProjectUrlKey, this.projectUrl);
     this.document = await client.open(this.projectUrl);
     await this.document.start();
+    await waitForDocumentConnected(this.document, INITIAL_SYNC_WAIT_MS);
   }
 
   async disconnectProject(): Promise<void> {
@@ -129,14 +132,9 @@ export class AudiotoolSdkNexusClient implements NexusClient {
   }
 
   async insertMidi(midi: GeneratedMidi, options: MidiInsertOptions = {}): Promise<void> {
-    if (!this.document) {
-      throw new Error('Sync an Audiotool project before inserting MIDI.');
-    }
-    if (!this.document.connected.getValue()) {
-      throw new Error('Audiotool sync is temporarily offline. Re-sync the project and try inserting again.');
-    }
+    const document = await this.getWritableDocument('insert MIDI');
 
-    const noteTracks = getNoteTracks(this.document);
+    const noteTracks = getNoteTracks(document);
     const explicitTarget = options.targetTrackId ? noteTracks.find((track) => track.id === options.targetTrackId) : null;
     // Preserve index positions: keep undefined slots so each generated track
     // maps to its intended target, even if some IDs weren't found yet.
@@ -159,7 +157,7 @@ export class AudiotoolSdkNexusClient implements NexusClient {
     const claimedNoteTrackIds = new Set<string>();
     distributedTargets.forEach((target) => { if (target) claimedNoteTrackIds.add(target.id); });
 
-    const insertedRegions = await this.document.modify((transaction) => {
+    const insertedRegions = await document.modify((transaction) => {
       ensureTimelineDuration(transaction, requiredDurationTicks);
       const regions: InsertedRegionSummary[] = [];
       generatedTracks.forEach((generatedTrack, index) => {
@@ -189,8 +187,8 @@ export class AudiotoolSdkNexusClient implements NexusClient {
     });
 
     const insertedRegionIds = new Set(insertedRegions.map((region) => region.regionId));
-    await verifyInsertedRegionsAfterSync(this.document, insertedRegions);
-    const noteRegions = this.document.queryEntities.ofTypes('noteRegion').get();
+    await verifyInsertedRegionsAfterSync(document, insertedRegions);
+    const noteRegions = document.queryEntities.ofTypes('noteRegion').get();
     const visibleRegions = noteRegions.filter((region) => insertedRegionIds.has(region.id)).length;
     if (visibleRegions !== insertedRegions.length) {
       console.warn(
@@ -200,16 +198,14 @@ export class AudiotoolSdkNexusClient implements NexusClient {
     }
     console.info(
       `[Sidekick] Inserted ${insertedRegions.length} MIDI region(s) at beat ${startBeat}. ` +
-      `Document online: ${this.document.connected.getValue()}.`
+      `Document online: ${document.connected.getValue()}.`
     );
   }
 
   async createAdditionalNoteTracks(count: number): Promise<number> {
-    if (!this.document) {
-      throw new Error('Sync an Audiotool project before creating note lanes.');
-    }
+    const document = await this.getWritableDocument('create note lanes');
 
-    const noteTracks = getNoteTracks(this.document);
+    const noteTracks = getNoteTracks(document);
     const baseTrack = noteTracks[0];
     if (!baseTrack?.player) {
       throw new Error('No source instrument note track was found. Create an instrument track in Audiotool first, then refresh Sidekick.');
@@ -220,7 +216,7 @@ export class AudiotoolSdkNexusClient implements NexusClient {
     if (amount === 0) return 0;
 
     const maxOrder = Math.max(...noteTracks.map((track) => track.orderAmongTracks ?? 0), 0);
-    await this.document.modify((transaction) => {
+    await document.modify((transaction) => {
       for (let index = 0; index < amount; index += 1) {
         transaction.create('noteTrack', {
           player: basePlayer,
@@ -234,34 +230,30 @@ export class AudiotoolSdkNexusClient implements NexusClient {
   }
 
   async setProjectBpm(bpm: number): Promise<void> {
-    if (!this.document) {
-      throw new Error('Sync an Audiotool project before changing BPM.');
-    }
-    const configs = this.document.queryEntities.ofTypes('config').get();
+    const document = await this.getWritableDocument('change BPM');
+    const configs = document.queryEntities.ofTypes('config').get();
     if (configs.length === 0) {
       throw new Error('No project config entity found. Open a project and refresh Sidekick.');
     }
     const clampedBpm = Math.max(40, Math.min(240, Math.round(bpm)));
-    await this.document.modify((transaction) => {
+    await document.modify((transaction) => {
       transaction.update(configs[0].fields.tempoBpm, clampedBpm);
     });
   }
 
   async createSuggestedInstrument(request: SuggestedInstrumentRequest): Promise<SessionTrack> {
     const client = await this.getAuthenticatedClient();
-    if (!this.document) {
-      throw new Error('Sync an Audiotool project before adding instruments.');
-    }
+    const document = await this.getWritableDocument('add instruments');
 
     const presetSlug = request.audiotoolInstrumentSlug ?? chooseInstrumentSlug(request);
     const preset = await fetchPreset(client, presetSlug);
     const presetName = normalizePresetName(presetSlug);
-    const noteTracks = getNoteTracks(this.document);
+    const noteTracks = getNoteTracks(document);
     const maxOrder = Math.max(...noteTracks.map((track) => track.orderAmongTracks ?? 0), 0);
     let createdTrackId = '';
     let audioSocketField: string | undefined;
 
-    await this.document.modify((transaction) => {
+    await document.modify((transaction) => {
       const device = transaction.createDeviceFromPreset(preset);
       if ('displayName' in device.fields) {
         transaction.update(device.fields.displayName, request.name);
@@ -307,7 +299,7 @@ export class AudiotoolSdkNexusClient implements NexusClient {
       );
     }
 
-    await verifyCreatedNoteTracksAfterSync(this.document, new Set([createdTrackId]));
+    await verifyCreatedNoteTracksAfterSync(document, new Set([createdTrackId]));
 
     return {
       id: createdTrackId,
@@ -336,6 +328,30 @@ export class AudiotoolSdkNexusClient implements NexusClient {
       throw new Error('Log in with Audiotool before connecting a project.');
     }
     return this.authResult;
+  }
+
+  private async getWritableDocument(actionDescription: string): Promise<SyncedDocument> {
+    if (!this.document) {
+      if (!this.projectUrl) {
+        throw new Error(`Sync an Audiotool project before attempting to ${actionDescription}.`);
+      }
+      await this.connectProject(this.projectUrl);
+    }
+
+    if (this.document && (this.document.connected.getValue() || await waitForDocumentConnected(this.document, INITIAL_SYNC_WAIT_MS))) {
+      return this.document;
+    }
+
+    if (!this.projectUrl) {
+      throw new Error('Audiotool sync is temporarily offline. Re-sync the project and try again.');
+    }
+
+    await this.connectProject(this.projectUrl);
+    if (this.document && (this.document.connected.getValue() || await waitForDocumentConnected(this.document, RECONNECT_SYNC_WAIT_MS))) {
+      return this.document;
+    }
+
+    throw new Error('Audiotool sync is temporarily offline. Re-sync the project and try again.');
   }
 
   private getStatusMessage(): string {
@@ -619,6 +635,25 @@ function countInsertedNotes(document: SyncedDocument, collectionIds: ReadonlySet
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function waitForDocumentConnected(document: SyncedDocument, timeoutMs: number): Promise<boolean> {
+  if (document.connected.getValue()) {
+    return Promise.resolve(true);
+  }
+
+  return new Promise((resolve) => {
+    const timeoutId = window.setTimeout(() => {
+      subscription.terminate();
+      resolve(false);
+    }, timeoutMs);
+    const subscription = document.connected.subscribe((connected) => {
+      if (!connected) return;
+      window.clearTimeout(timeoutId);
+      subscription.terminate();
+      resolve(true);
+    }, true);
+  });
 }
 
 function colorIndexForRole(role: GeneratedMidiTrack['role']): number {
