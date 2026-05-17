@@ -68,6 +68,15 @@ describe('AudiotoolSdkNexusClient pointer helpers', () => {
     });
   });
 
+  it('prefers an existing entity location over a synthesized root pointer', () => {
+    const existingLocation = {
+      entityId: 'entity-123',
+      fieldIndex: [7]
+    } as unknown as Parameters<typeof __testing.locationOrEntityPointer>[0];
+
+    expect(__testing.locationOrEntityPointer(existingLocation, 'fallback-id', 'existing')).toBe(existingLocation);
+  });
+
   it('throws when entity id is missing for root pointer conversion', () => {
     expect(() => __testing.pointerFromEntityId('', 'root')).toThrow(
       'Audiotool entityId for "root" is missing or invalid.'

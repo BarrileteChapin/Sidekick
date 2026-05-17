@@ -260,7 +260,7 @@ export class AudiotoolSdkNexusClient implements NexusClient {
         transaction.update(device.fields.positionY, 300 + noteTracks.length * 80);
       }
 
-      const deviceLocation = pointerFromEntityId(device.id, `device:${request.name}`);
+      const deviceLocation = locationOrEntityPointer(device.location, device.id, `device:${request.name}`);
       const noteTrack = transaction.create('noteTrack', {
         player: deviceLocation,
         isEnabled: true,
@@ -455,6 +455,7 @@ function getDefaultRedirectUrl(): string {
 
 type NoteTrackTarget = {
   id: string;
+  location?: NexusLocation;
   player?: PointerLocation;
   orderAmongTracks?: number;
 };
@@ -470,6 +471,7 @@ function getNoteTracks(document: SyncedDocument): NoteTrackTarget[] {
   return document.queryEntities.ofTypes('noteTrack').get()
     .map((track): NoteTrackTarget => ({
       id: track.id,
+      location: track.location,
       player: normalizePointerLocation(track.fields.player.value),
       orderAmongTracks: track.fields.orderAmongTracks.value
     }));
@@ -486,9 +488,11 @@ function insertGeneratedTrack(
     Math.max(...generatedTrack.notes.map((note) => note.startBeat + note.durationBeats), midi.request.bars * 4)
   );
   let collectionId = '';
+  let collectionLocation: NexusLocation | undefined;
   try {
     const collection = transaction.create('noteCollection', {});
     collectionId = collection.id;
+    collectionLocation = collection.location;
   } catch (error) {
     console.error('[Sidekick] noteCollection create failed.', {
       generatedTrack: generatedTrack.name,
@@ -504,13 +508,13 @@ function insertGeneratedTrack(
     role: generatedTrack.role,
     startBeat,
     noteTrackId: noteTrack.id,
-    noteTrackLocation: describePointerShape(pointerFromEntityId(noteTrack.id, `noteTrack:${noteTrack.id}:debug`)),
-    collectionLocation: describePointerShape(pointerFromEntityId(collectionId, 'noteCollection:debug'))
+    noteTrackLocation: describePointerShape(locationOrEntityPointer(noteTrack.location, noteTrack.id, `noteTrack:${noteTrack.id}:debug`)),
+    collectionLocation: describePointerShape(locationOrEntityPointer(collectionLocation, collectionId, 'noteCollection:debug'))
   });
   try {
     transaction.create('noteRegion', {
-      collection: pointerFromEntityId(collectionId, 'noteRegion:collection'),
-      track: pointerFromEntityId(noteTrack.id, `noteRegion:track:${noteTrack.id}`),
+      collection: locationOrEntityPointer(collectionLocation, collectionId, 'noteRegion:collection'),
+      track: locationOrEntityPointer(noteTrack.location, noteTrack.id, `noteRegion:track:${noteTrack.id}`),
       region: {
         positionTicks: beatsToTicks(startBeat),
         durationTicks: regionDurationTicks,
@@ -528,8 +532,8 @@ function insertGeneratedTrack(
       role: generatedTrack.role,
       noteTrackId: noteTrack.id,
       collectionId,
-      collectionPointer: describePointerShape(pointerFromEntityId(collectionId, 'noteRegion:collection:error')),
-      trackPointer: describePointerShape(pointerFromEntityId(noteTrack.id, `noteRegion:track:${noteTrack.id}:error`)),
+      collectionPointer: describePointerShape(locationOrEntityPointer(collectionLocation, collectionId, 'noteRegion:collection:error')),
+      trackPointer: describePointerShape(locationOrEntityPointer(noteTrack.location, noteTrack.id, `noteRegion:track:${noteTrack.id}:error`)),
       error
     });
     throw error;
@@ -538,7 +542,7 @@ function insertGeneratedTrack(
   generatedTrack.notes.forEach((note, noteIndex) => {
     try {
       transaction.create('note', {
-        collection: pointerFromEntityId(collectionId, `note:collection:${noteIndex}`),
+        collection: locationOrEntityPointer(collectionLocation, collectionId, `note:collection:${noteIndex}`),
         positionTicks: beatsToTicks(note.startBeat),
         durationTicks: Math.max(1, beatsToTicks(note.durationBeats)),
         pitch: Math.max(0, Math.min(127, Math.round(note.pitch))),
@@ -553,7 +557,7 @@ function insertGeneratedTrack(
         noteIndex,
         note,
         collectionId,
-        collectionPointer: describePointerShape(pointerFromEntityId(collectionId, `note:collection:${noteIndex}:error`)),
+        collectionPointer: describePointerShape(locationOrEntityPointer(collectionLocation, collectionId, `note:collection:${noteIndex}:error`)),
         error
       });
       throw error;
@@ -623,6 +627,10 @@ function pointerFromEntityId(entityId: string, context: string): NexusLocation {
     entityId,
     fieldIndex: []
   } as unknown as NexusLocation;
+}
+
+function locationOrEntityPointer(location: NexusLocation | undefined, entityId: string, context: string): NexusLocation {
+  return location ?? pointerFromEntityId(entityId, context);
 }
 
 function describePointerShape(location: unknown): {
@@ -735,6 +743,7 @@ export const __testing = {
   normalizePointerLocation,
   toPointerLocation,
   pointerFromEntityId,
+  locationOrEntityPointer,
   resolveDeviceAudioOutputLocation,
   resolveSocketLocation,
   describePointerShape
