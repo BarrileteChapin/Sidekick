@@ -1,5 +1,9 @@
 # Sidekick
 
+
+https://github.com/user-attachments/assets/6fc4073b-012f-49aa-a757-a81d4c9c891b
+
+
 **Sidekick is an AI-powered music production companion for Audiotool.**
 
 It helps producers move from a blank project to a workable musical idea by combining two complementary workflows:
