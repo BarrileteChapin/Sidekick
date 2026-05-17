@@ -690,7 +690,13 @@ const AUDIOTOOL_DEVICE_TYPES = new Set(['heisenberg', 'pulverisateur', 'bassline
 const PRESET_ID_PATTERN = /^(?:presets\/)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function isLocationLike(value: unknown): value is NexusLocation {
-  return typeof value === 'object' && value !== null && 'entityId' in value && typeof (value as { entityId?: unknown }).entityId === 'string';
+  return typeof value === 'object'
+    && value !== null
+    && 'entityId' in value
+    && typeof (value as { entityId?: unknown }).entityId === 'string'
+    && 'fieldIndex' in value
+    && Array.isArray((value as { fieldIndex?: unknown }).fieldIndex)
+    && (value as { fieldIndex: unknown[] }).fieldIndex.every((entry) => typeof entry === 'number');
 }
 
 function hasSocketLocation(value: unknown): value is { location: NexusLocation } {
