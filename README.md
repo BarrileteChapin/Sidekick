@@ -251,6 +251,34 @@ http://localhost:5173
 
 \---
 
+## Deploy To GitHub Pages (online2 branch)
+
+This repository includes a deploy workflow at `.github/workflows/deploy-pages.yml`.
+
+How deployment works:
+
+1. Push to branch `online2`.
+2. GitHub Actions builds the app using a Pages base path (`VITE_BASE_PATH=/Sidekick/`).
+3. The built `dist` artifact is published to GitHub Pages.
+
+Expected public URL:
+
+- `https://barriletechapin.github.io/Sidekick/`
+
+Audiotool OAuth for deployed builds:
+
+- `VITE_AUDIOTOOL_REDIRECT_URL` must match the final deployed URL exactly.
+- The same redirect URL must also be configured in your Audiotool Developer app.
+- If login works locally but fails on Pages, use the **Use a different Audiotool client ID** option in the connection panel.
+
+Gemini in static hosting:
+
+- GitHub Pages cannot use the local `/api/gemini/*` proxy.
+- Use the **Gemini Access** card and save a personal Gemini API key in browser storage.
+- Without a key, Sidekick uses offline/local planning and disables Next Steps cloud analysis.
+
+\---
+
 ## Optional: Audiotool and Gemini Configuration
 
 Create a local `.env` file based on `.env.example`.

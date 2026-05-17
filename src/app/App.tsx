@@ -6,11 +6,13 @@ import { loadProfile } from '../core/profileStore';
 import type { GeneratedMidi } from '../generation/types';
 import { ChatPanel, type ChatDraft } from '../components/ChatPanel';
 import { AudiotoolConnectionPanel } from '../components/AudiotoolConnectionPanel';
+import { GeminiConfigPanel } from '../components/GeminiConfigPanel';
 import { GeneratedMidiCard } from '../components/GeneratedMidiCard';
 import { GenerateMusicPanel, type GenerateMusicState } from '../components/GenerateMusicPanel';
 import { NextStepsPanel } from '../components/NextStepsPanel';
 import { SessionSummary } from '../components/SessionSummary';
 import { createAppServices, type AppServices } from './providers';
+import { clearStoredGeminiApiKey, storeGeminiApiKey } from '../gemini/userKeyStore';
 import { findCompatibleNoteTrack } from './trackRouting';
 import type { MidiInsertOptions, NexusConnectionState } from '../nexus/NexusClient';
 import type { NextStepsAnalysis } from '../nextSteps/schemas';
@@ -43,23 +45,53 @@ export function App() {
     bars: 8,
     outputMode: 'motif_chords_bass'
   });
+  const brandIconUrl = `${import.meta.env.BASE_URL}sidekick-favicon.png`;
 
   const refreshSession = useCallback(async () => {
-    const state = (await services.nexus.getConnectionState?.()) ?? null;
-    const [session, loadedProfile] = await Promise.all([services.nexus.getCurrentSessionContext(), loadProfile()]);
-    const nextAnalysis = analyzer.analyze(session);
-    setConnectionState(state);
-    setAnalysis(nextAnalysis);
-    setProfile(loadedProfile);
-    setGenerationState((current) => ({ ...current, styleProfileId: nextAnalysis.session.styleProfileId ?? current.styleProfileId }));
-    setStatus(state?.message ?? `${services.nexusMode === 'real' ? 'Audiotool session' : 'Mock session'} ready via ${services.nexusSource}.`);
+    console.info('[Sidekick] Refreshing session context...', {
+      nexusMode: services.nexusMode,
+      nexusSource: services.nexusSource
+    });
+    try {
+      const state = (await services.nexus.getConnectionState?.()) ?? null;
+      const [session, loadedProfile] = await Promise.all([services.nexus.getCurrentSessionContext(), loadProfile()]);
+      const nextAnalysis = analyzer.analyze(session);
+      setConnectionState(state);
+      setAnalysis(nextAnalysis);
+      setProfile(loadedProfile);
+      setGenerationState((current) => ({ ...current, styleProfileId: nextAnalysis.session.styleProfileId ?? current.styleProfileId }));
+      setStatus(state?.message ?? `${services.nexusMode === 'real' ? 'Audiotool session' : 'Mock session'} ready via ${services.nexusSource}.`);
+      console.info('[Sidekick] Session refreshed.', {
+        connected: state?.connected ?? false,
+        authenticated: state?.authenticated ?? false,
+        trackCount: nextAnalysis.session.tracks.length
+      });
+    } catch (error) {
+      console.error('[Sidekick] Failed to refresh session context.', error);
+      throw error;
+    }
   }, [analyzer, services]);
 
   const useAudiotoolClientId = useCallback((clientId: string) => {
+    console.info('[Sidekick] Applying Audiotool client ID override.');
     setStatus('Initializing Audiotool login...');
     setConnectionState(null);
     setAnalysis(null);
     setServices(createAppServices({ audiotoolClientId: clientId }));
+  }, []);
+
+  const saveGeminiApiKey = useCallback((apiKey: string) => {
+    console.info('[Sidekick] Saving Gemini API key to browser storage.');
+    storeGeminiApiKey(apiKey);
+    setStatus('Gemini API key saved for this browser.');
+    setServices(createAppServices({ geminiApiKey: apiKey }));
+  }, []);
+
+  const clearGeminiApiKey = useCallback(() => {
+    console.info('[Sidekick] Clearing Gemini API key from browser storage.');
+    clearStoredGeminiApiKey();
+    setStatus('Gemini API key removed from this browser.');
+    setServices(createAppServices());
   }, []);
 
   useEffect(() => {
@@ -157,6 +189,9 @@ export function App() {
       if ((plan.audiotoolActions?.length ?? 0) > 0) {
         await refreshSession();
       }
+    } catch (error) {
+      console.error('[Sidekick] Chat planning or execution failed.', error);
+      setStatus(error instanceof Error ? error.message : 'Assistant action failed.');
     } finally {
       setIsChatting(false);
     }
@@ -171,6 +206,7 @@ export function App() {
       addAction(`Analyzed ${file.name}; Next Steps roadmap is ready.`);
       setStatus('Next Steps roadmap is ready.');
     } catch (error) {
+      console.error('[Sidekick] Reference analysis failed.', error);
       setStatus(error instanceof Error ? error.message : 'Reference analysis failed.');
       throw error;
     } finally {
@@ -255,6 +291,7 @@ export function App() {
       setStatus('Inserted generated MIDI into Audiotool. Refreshing session...');
       await refreshSession();
     } catch (error) {
+      console.error('[Sidekick] MIDI insert failed.', error);
       setStatus(error instanceof Error ? error.message : 'Insert failed.');
     } finally {
       setIsInserting(false);
@@ -327,7 +364,7 @@ export function App() {
       <main className="app-shell app-dashboard">
         <section className="dashboard-top">
           <section className="card dashboard-brand-card" aria-label="Sidekick overview">
-            <img className="dashboard-brand-icon" src="/sidekick-favicon.png" alt="Sidekick logo" width={56} height={56} />
+            <img className="dashboard-brand-icon" src={brandIconUrl} alt="Sidekick logo" width={56} height={56} />
             <p className="app-eyebrow mono">Audiotool NEXUS</p>
             <h1 className="app-title">Sidekick</h1>
             <div className="pill-row">
@@ -373,6 +410,12 @@ export function App() {
                 </ul>
               ) : null}
             </section>
+            <GeminiConfigPanel
+              mode={services.geminiMode}
+              hasApiKey={services.hasGeminiApiKey}
+              onSaveApiKey={saveGeminiApiKey}
+              onClearApiKey={clearGeminiApiKey}
+            />
             <ChatPanel
               key={chatDraft?.id ?? 'default-chat-draft'}
               latestPlan={chatPlan}

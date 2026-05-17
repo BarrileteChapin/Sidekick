@@ -23,11 +23,15 @@ export interface NexusRuntimeOptions {
   audiotoolRedirectUrl?: string;
 }
 
+const legacyStoredClientIdKey = 'sidekick:audiotool-client-id';
+const clientIdOverrideKey = 'sidekick:audiotool-client-id-override';
+
 export function createNexusRuntime(options: NexusRuntimeOptions = {}): NexusRuntime {
   const mode = options.mode ?? getConfiguredMode();
   const hostNexus = getHostNexus();
 
   if (mode !== 'mock' && hostNexus) {
+    console.info('[Sidekick] Using host Audiotool NEXUS runtime.');
     return {
       client: new RealNexusClient(hostNexus),
       mode: 'real',
@@ -35,14 +39,28 @@ export function createNexusRuntime(options: NexusRuntimeOptions = {}): NexusRunt
     };
   }
 
-  const clientId = options.audiotoolClientId ?? getStoredClientId() ?? import.meta.env.VITE_AUDIOTOOL_CLIENT_ID;
+  const clientId = resolveClientId(options.audiotoolClientId);
   if (mode !== 'mock' && typeof clientId === 'string' && clientId.length > 0) {
-    storeClientId(clientId);
+    const redirectUrl = getRedirectUrl(options.audiotoolRedirectUrl);
+    const explicitClientId = options.audiotoolClientId?.trim();
+    if (explicitClientId) {
+      storeClientIdOverride(explicitClientId);
+    }
+    console.info('[Sidekick] Using Audiotool SDK OAuth runtime.', {
+      clientId: maskClientId(clientId),
+      redirectUrl
+    });
     return {
-      client: new AudiotoolSdkNexusClient(clientId, getRedirectUrl(options.audiotoolRedirectUrl)),
+      client: new AudiotoolSdkNexusClient(clientId, redirectUrl),
       mode: 'real',
       source: '@audiotool/nexus OAuth'
     };
+  }
+
+  if (mode !== 'mock') {
+    console.warn('[Sidekick] Falling back to mock Nexus runtime because no Audiotool client ID is configured.');
+  } else {
+    console.info('[Sidekick] Using mock Nexus runtime (forced by config).');
   }
 
   return {
@@ -53,6 +71,19 @@ export function createNexusRuntime(options: NexusRuntimeOptions = {}): NexusRunt
         ? 'Mock NEXUS'
         : 'Mock fallback; set VITE_AUDIOTOOL_CLIENT_ID or enter a client ID to enable Audiotool login'
   };
+}
+
+function resolveClientId(optionClientId: string | undefined): string | null {
+  const explicitClientId = optionClientId?.trim();
+  if (explicitClientId) return explicitClientId;
+
+  const configuredClientId = import.meta.env.VITE_AUDIOTOOL_CLIENT_ID?.trim();
+  if (configuredClientId) return configuredClientId;
+
+  const overrideClientId = getStoredClientIdOverride();
+  if (overrideClientId) return overrideClientId;
+
+  return getLegacyStoredClientId();
 }
 
 function getConfiguredMode(): NexusRuntimeMode {
@@ -69,17 +100,42 @@ function getHostNexus(): AudiotoolNexusLike | null {
   return hostWindow.audiotoolNexus ?? hostWindow.nexus ?? hostWindow.NEXUS ?? null;
 }
 
-function getStoredClientId(): string | null {
+function getLegacyStoredClientId(): string | null {
   if (typeof localStorage === 'undefined') return null;
-  const value = localStorage.getItem('sidekick:audiotool-client-id');
+  const value = localStorage.getItem(legacyStoredClientIdKey);
   return value?.trim() || null;
 }
 
-function storeClientId(clientId: string): void {
+function getStoredClientIdOverride(): string | null {
+  if (typeof localStorage === 'undefined') return null;
+  const value = localStorage.getItem(clientIdOverrideKey);
+  return value?.trim() || null;
+}
+
+function storeClientIdOverride(clientId: string): void {
   if (typeof localStorage === 'undefined') return;
-  localStorage.setItem('sidekick:audiotool-client-id', clientId);
+  localStorage.setItem(clientIdOverrideKey, clientId);
 }
 
 function getRedirectUrl(optionRedirectUrl: string | undefined): string {
-  return optionRedirectUrl ?? import.meta.env.VITE_AUDIOTOOL_REDIRECT_URL ?? 'http://127.0.0.1:5173/';
+  const redirectFromOption = optionRedirectUrl?.trim();
+  if (redirectFromOption) return redirectFromOption;
+
+  const redirectFromEnv = import.meta.env.VITE_AUDIOTOOL_REDIRECT_URL?.trim();
+  if (redirectFromEnv) return redirectFromEnv;
+
+  if (typeof window !== 'undefined') {
+    return getRuntimeRedirectUrl();
+  }
+
+  return 'http://127.0.0.1:5173/';
+}
+
+function getRuntimeRedirectUrl(): string {
+  return new URL(import.meta.env.BASE_URL ?? '/', window.location.origin).toString();
+}
+
+function maskClientId(clientId: string): string {
+  if (clientId.length <= 8) return clientId;
+  return `${clientId.slice(0, 4)}...${clientId.slice(-4)}`;
 }

@@ -9,10 +9,16 @@ import { createGeminiNextSteps, createGeminiPlan } from './server/gemini/route';
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
   const localEnv = readLocalServerEnv();
+  const basePath = normalizeBasePath(env.VITE_BASE_PATH);
+  const buildId = process.env.GITHUB_SHA?.slice(0, 7) ?? new Date().toISOString();
   process.env.GEMINI_API_KEY = localEnv.GEMINI_API_KEY ?? env.GEMINI_API_KEY ?? process.env.GEMINI_API_KEY;
   process.env.GEMINI_FLASH_MODEL = localEnv.GEMINI_FLASH_MODEL ?? env.GEMINI_FLASH_MODEL ?? process.env.GEMINI_FLASH_MODEL;
 
   return {
+    base: basePath,
+    define: {
+      __SIDEKICK_BUILD_ID__: JSON.stringify(buildId)
+    },
     plugins: [react(), geminiApiPlugin()],
     server: {
       host: '127.0.0.1',
@@ -112,4 +118,11 @@ function readLocalServerEnv(): Partial<Record<'GEMINI_API_KEY' | 'GEMINI_FLASH_M
       values[key] = rawValue.replace(/^['"]|['"]$/g, '');
       return values;
     }, {});
+}
+
+function normalizeBasePath(value: string | undefined): string {
+  const raw = value?.trim();
+  if (!raw || raw === '/') return '/';
+  const cleaned = raw.replace(/^\/+/, '').replace(/\/+$/, '');
+  return `/${cleaned}/`;
 }

@@ -22,12 +22,16 @@ export function AudiotoolConnectionPanel({
   const [clientId, setClientId] = useState('');
   const [isWorking, setIsWorking] = useState(false);
   const isMockMode = !state || state.mode === 'mock';
+  const suggestedRedirectUrl = getSuggestedRedirectUrl(state);
 
   async function run(action: () => Promise<void> | void) {
     setIsWorking(true);
     try {
       await action();
       await onRefresh();
+    } catch (error) {
+      console.error('[Sidekick] Audiotool connection action failed.', error);
+      throw error;
     } finally {
       setIsWorking(false);
     }
@@ -38,7 +42,7 @@ export function AudiotoolConnectionPanel({
       <>
         {includeRuntimeSource ? <p>{runtimeSource}</p> : null}
         <p className="subtle">
-          Register an app at developer.audiotool.com, use redirect URI http://127.0.0.1:5173/, then paste the client ID here.
+          Register an app at developer.audiotool.com with redirect URI <strong>{suggestedRedirectUrl}</strong>, then paste the client ID.
         </p>
         <div className="field">
           <label htmlFor="audiotool-client-id">Audiotool client ID</label>
@@ -50,7 +54,15 @@ export function AudiotoolConnectionPanel({
             onChange={(event) => setClientId(event.target.value)}
           />
         </div>
-        <button className="button" type="button" disabled={!clientId.trim()} onClick={() => onUseClientId(clientId.trim())}>
+        <button
+          className="button"
+          type="button"
+          disabled={!clientId.trim()}
+          onClick={() => {
+            console.info('[Sidekick] Enabling Audiotool login from connection panel.');
+            onUseClientId(clientId.trim());
+          }}
+        >
           Enable Audiotool Login
         </button>
       </>
@@ -103,6 +115,35 @@ export function AudiotoolConnectionPanel({
                 </button>
               ) : null}
             </div>
+            <details className="connection-details">
+              <summary>Use a different Audiotool client ID</summary>
+              <div className="stack">
+                <p className="subtle">
+                  If local/dev writes work but this deployed build does not, paste the same Audiotool developer app client ID here and log in again.
+                </p>
+                <div className="field">
+                  <label htmlFor="audiotool-client-id-override">Audiotool client ID override</label>
+                  <textarea
+                    id="audiotool-client-id-override"
+                    rows={2}
+                    placeholder="Paste your working Audiotool developer app client ID"
+                    value={clientId}
+                    onChange={(event) => setClientId(event.target.value)}
+                  />
+                </div>
+                <button
+                  className="button secondary"
+                  type="button"
+                  disabled={isWorking || !clientId.trim()}
+                  onClick={() => {
+                    console.info('[Sidekick] Switching Audiotool client ID override.');
+                    onUseClientId(clientId.trim());
+                  }}
+                >
+                  Switch client ID
+                </button>
+              </div>
+            </details>
           </div>
         ) : null}
       </>
@@ -115,7 +156,13 @@ export function AudiotoolConnectionPanel({
       : state.authenticated
         ? `Logged in${state.userName ? ` as ${state.userName}` : ''}`
         : 'Not logged in';
-    const syncStatusLabel = isMockMode ? 'Login not configured' : state.connected ? 'Project synced' : 'No project synced';
+    const syncStatusLabel = isMockMode
+      ? 'Login not configured'
+      : state.connected
+        ? 'Project synced'
+        : state.projectUrl
+          ? 'Sync offline'
+          : 'No project synced';
     const summaryMessage = isMockMode ? runtimeSource : state.message;
 
     return (
@@ -152,9 +199,23 @@ export function AudiotoolConnectionPanel({
       <h2 id="audiotool-connection-title">Audiotool connection</h2>
       <div className="pill-row">
         <span className="pill">{state.authenticated ? `Logged in${state.userName ? ` as ${state.userName}` : ''}` : 'Not logged in'}</span>
-        <span className="pill">{state.connected ? 'Project synced' : 'No project synced'}</span>
+        <span className="pill">{state.connected ? 'Project synced' : state.projectUrl ? 'Sync offline' : 'No project synced'}</span>
       </div>
       {renderConnectedControls(state, true)}
     </section>
   );
+}
+
+function getSuggestedRedirectUrl(state: NexusConnectionState | null): string {
+  const redirectFromState = state?.redirectUrl?.trim();
+  if (redirectFromState) return redirectFromState;
+
+  const redirectFromEnv = import.meta.env.VITE_AUDIOTOOL_REDIRECT_URL?.trim();
+  if (redirectFromEnv) return redirectFromEnv;
+
+  if (typeof window !== 'undefined') {
+    return new URL(import.meta.env.BASE_URL ?? '/', window.location.origin).toString();
+  }
+
+  return 'http://127.0.0.1:5173/';
 }
