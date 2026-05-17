@@ -87,6 +87,42 @@ export function planDistributedMidiInsertion(options: {
   return preview;
 }
 
+export function selectDistributedTargetTrackIds(options: {
+  generatedTracks: { role: TrackRole; name: string }[];
+  noteTracks: SessionTrack[];
+  preferredTracks?: SessionTrack[];
+  instruments?: Partial<Record<TrackRole, string>>;
+}): string[] {
+  const preferredCandidates = options.preferredTracks ?? [];
+  const preferredTrackIds = new Set(preferredCandidates.map((track) => track.id));
+  const fallbackCandidates = options.noteTracks.filter((track) => !preferredTrackIds.has(track.id));
+  const usedTrackIds = new Set<string>();
+  const targetTrackIds: string[] = [];
+
+  for (const track of options.generatedTracks) {
+    const expectedInstrumentSlug = options.instruments?.[track.role];
+    let target = findCompatibleNoteTrack(preferredCandidates, track.role, expectedInstrumentSlug, usedTrackIds);
+
+    if (!target) {
+      target = preferredCandidates.find((candidate) => !usedTrackIds.has(candidate.id));
+    }
+    if (!target) {
+      target = findCompatibleNoteTrack(fallbackCandidates, track.role, expectedInstrumentSlug, usedTrackIds);
+    }
+    if (!target) {
+      target = fallbackCandidates.find((candidate) => !usedTrackIds.has(candidate.id));
+    }
+    if (!target) {
+      break;
+    }
+
+    usedTrackIds.add(target.id);
+    targetTrackIds.push(target.id);
+  }
+
+  return targetTrackIds;
+}
+
 export function formatPresetLabel(instrumentName: string | undefined): string {
   if (!instrumentName) return '';
   return instrumentName.replace(/-/g, ' ').replace(/\b\w/g, l => l.toUpperCase());

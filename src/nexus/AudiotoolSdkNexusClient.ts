@@ -13,6 +13,8 @@ type NexusEntityLike = {
   fields: Record<string, { value?: unknown } | undefined>;
 };
 
+const DEVICE_AUDIO_OUTPUT_FIELDS = ['audioOutput', 'mainOutput', 'masterOutput'] as const;
+
 const storedProjectUrlKey = 'sidekick:audiotool-project-url';
 
 export class AudiotoolSdkNexusClient implements NexusClient {
@@ -257,6 +259,7 @@ export class AudiotoolSdkNexusClient implements NexusClient {
     const noteTracks = getNoteTracks(this.document);
     const maxOrder = Math.max(...noteTracks.map((track) => track.orderAmongTracks ?? 0), 0);
     let createdTrackId = '';
+    let audioSocketField: string | undefined;
 
     await this.document.modify((transaction) => {
       const device = transaction.createDeviceFromPreset(preset);
@@ -280,7 +283,9 @@ export class AudiotoolSdkNexusClient implements NexusClient {
       });
       createdTrackId = noteTrack.id;
 
-      if ('audioOutput' in device.fields) {
+      const outputSocket = resolveDeviceAudioOutputLocation(device.fields as Record<string, unknown>);
+      if (outputSocket) {
+        audioSocketField = outputSocket.schemaPath.split('/').filter(Boolean).at(-1);
         const existingChannelCount = transaction.entities.ofTypes('mixerChannel').get().length;
         const mixerChannel = transaction.create('mixerChannel', {
           displayParameters: {
@@ -289,11 +294,18 @@ export class AudiotoolSdkNexusClient implements NexusClient {
           }
         });
         transaction.create('desktopAudioCable', {
-          fromSocket: (device.fields as unknown as { audioOutput: { location: NexusLocation } }).audioOutput.location,
+          fromSocket: outputSocket,
           toSocket: mixerChannel.fields.audioInput.location
         });
       }
     });
+
+    if (!audioSocketField) {
+      console.warn(
+        `[Sidekick] Created instrument "${request.name}" (${presetSlug}) without a known audio output socket. ` +
+        'Its note lane exists, but no mixer cable was added.'
+      );
+    }
 
     await verifyCreatedNoteTracksAfterSync(this.document, new Set([createdTrackId]));
 
@@ -624,6 +636,16 @@ function beatsToTicks(beats: number): number {
   return Math.round(beats * Ticks.Beat);
 }
 
+export function resolveDeviceAudioOutputLocation(fields: Record<string, unknown>): NexusLocation | undefined {
+  for (const fieldName of DEVICE_AUDIO_OUTPUT_FIELDS) {
+    const field = fields[fieldName];
+    if (hasSocketLocation(field)) {
+      return field.location;
+    }
+  }
+  return undefined;
+}
+
 /** Audiotool-native synthesizer device types that must be resolved via
  *  `presets.search()` rather than the GM-only `presets.getInstrument()`. */
 const AUDIOTOOL_DEVICE_TYPES = new Set(['heisenberg', 'pulverisateur', 'bassline', 'tonematrix', 'space', 'machiniste', 'beatbox8', 'beatbox9']);
@@ -631,6 +653,10 @@ const PRESET_ID_PATTERN = /^(?:presets\/)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0
 
 function isLocationLike(value: unknown): value is NexusLocation {
   return typeof value === 'object' && value !== null && 'entityId' in value && typeof (value as { entityId?: unknown }).entityId === 'string';
+}
+
+function hasSocketLocation(value: unknown): value is { location: NexusLocation } {
+  return typeof value === 'object' && value !== null && 'location' in value && isLocationLike((value as { location?: unknown }).location);
 }
 
 function normalizePresetName(slug: string): string {

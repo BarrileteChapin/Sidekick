@@ -13,7 +13,7 @@ import { NextStepsPanel } from '../components/NextStepsPanel';
 import { SessionSummary } from '../components/SessionSummary';
 import { createAppServices, type AppServices } from './providers';
 import { clearStoredGeminiApiKey, storeGeminiApiKey } from '../gemini/userKeyStore';
-import { findCompatibleNoteTrack } from './trackRouting';
+import { findCompatibleNoteTrack, selectDistributedTargetTrackIds } from './trackRouting';
 import type { MidiInsertOptions, NexusConnectionState } from '../nexus/NexusClient';
 import type { NextStepsAnalysis } from '../nextSteps/schemas';
 
@@ -162,13 +162,35 @@ export function App() {
         if (!insertMidi) {
           throw new Error('This connection does not support MIDI insertion. Refresh Sidekick and re-sync your project.');
         }
-        const targetTrackId = createdTracks[0]?.id;
-        setStatus('Auto-inserting MIDI into Audiotool…');
-        await insertMidi(midi, {
-          targetTrackId,
-          startBeat: autoInsertAction.startBeat ?? 0
+        const activeTracks = midi.tracks.filter((track) => track.notes.length > 0);
+        const style = services.styles.getById(midi.request.styleProfileId);
+        const targetTrackIds = selectDistributedTargetTrackIds({
+          generatedTracks: activeTracks.map((track) => ({ role: track.role, name: track.name })),
+          preferredTracks: createdTracks,
+          noteTracks,
+          instruments: style.instruments
         });
-        const label = createdTracks[0] ? ` into "${createdTracks[0].name}"` : '';
+        const insertOptions: MidiInsertOptions = {
+          startBeat: autoInsertAction.startBeat ?? 0
+        };
+
+        if (activeTracks.length === 1 && targetTrackIds[0]) {
+          insertOptions.targetTrackId = targetTrackIds[0];
+          insertOptions.trackMode = 'selected';
+        } else if (targetTrackIds.length === activeTracks.length && targetTrackIds.length > 0) {
+          insertOptions.targetTrackIds = targetTrackIds;
+          insertOptions.trackMode = 'distribute';
+        } else if (createdTracks[0]) {
+          insertOptions.targetTrackId = createdTracks[0].id;
+          insertOptions.trackMode = 'selected';
+        }
+        setStatus('Auto-inserting MIDI into Audiotool…');
+        await insertMidi(midi, insertOptions);
+        const label = targetTrackIds.length > 1
+          ? ` across ${targetTrackIds.length} target tracks`
+          : createdTracks[0]
+            ? ` into "${createdTracks[0].name}"`
+            : '';
         addAction(`Auto-inserted ${midi.name}${label} at beat ${autoInsertAction.startBeat ?? 0}.`);
         setStatus('MIDI inserted. Refreshing session…');
       }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { findCompatibleNoteTrack, planDistributedMidiInsertion } from '../app/trackRouting';
+import { findCompatibleNoteTrack, planDistributedMidiInsertion, selectDistributedTargetTrackIds } from '../app/trackRouting';
 import type { SessionTrack } from '../core/types';
 
 const tracks: SessionTrack[] = [
@@ -61,5 +61,38 @@ describe('track routing', () => {
 
     expect(preview[0]?.summary).toContain('Use existing: Lead');
     expect(preview[1]?.summary).toContain('Use existing: Spare Lane');
+  });
+
+  it('prefers newly created tracks when auto-inserting multi-track chat output', () => {
+    const targetTrackIds = selectDistributedTargetTrackIds({
+      generatedTracks: [
+        { role: 'bass', name: 'Bass' },
+        { role: 'lead', name: 'Lead' }
+      ],
+      preferredTracks: [
+        { id: 'created-lead', name: 'Created Lead', role: 'lead', hasMidi: true, hasAudio: false, tags: ['noteTrack'] },
+        { id: 'created-bass', name: 'Created Bass', role: 'bass', hasMidi: true, hasAudio: false, tags: ['noteTrack'] }
+      ],
+      noteTracks: tracks,
+      instruments: { lead: 'presets/lead-a', bass: 'presets/bass-a' }
+    });
+
+    expect(targetTrackIds).toEqual(['created-bass', 'created-lead']);
+  });
+
+  it('falls back to existing lanes when chat auto-insert creates only some targets', () => {
+    const targetTrackIds = selectDistributedTargetTrackIds({
+      generatedTracks: [
+        { role: 'lead', name: 'Lead' },
+        { role: 'bass', name: 'Bass' }
+      ],
+      preferredTracks: [
+        { id: 'created-lead', name: 'Created Lead', role: 'lead', hasMidi: true, hasAudio: false, tags: ['noteTrack'] }
+      ],
+      noteTracks: tracks,
+      instruments: { lead: 'presets/lead-a', bass: 'presets/bass-a' }
+    });
+
+    expect(targetTrackIds).toEqual(['created-lead', 'bass-1']);
   });
 });
