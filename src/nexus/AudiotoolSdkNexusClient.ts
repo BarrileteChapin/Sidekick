@@ -1,5 +1,5 @@
 import { audiotool, type AuthenticatedClient, type BrowserAuthResult, type SyncedDocument } from '@audiotool/nexus';
-import { schemaPathToSchemaLocation, type NexusLocation, type SchemaPath } from '@audiotool/nexus/document';
+import type { NexusLocation } from '@audiotool/nexus/document';
 import { Ticks } from '@audiotool/nexus/utils';
 import type { MidiInsertOptions, NexusClient, NexusConnectionState, SuggestedInstrumentRequest } from './NexusClient';
 import type { SessionContext, SessionTrack, TrackRole } from '../core/types';
@@ -704,29 +704,55 @@ async function connectCreatedInstrumentToMixer(
   options: { deviceId: string; deviceEntityType: string; outputFieldName: string; trackName: string }
 ): Promise<void> {
   const { deviceId, deviceEntityType, outputFieldName, trackName } = options;
+  const deviceEntity = document.queryEntities.get().find((entity) => entity.id === deviceId) as NexusEntityLike | undefined;
+  const outputSocket = deviceEntity
+    ? resolveDeviceAudioOutputLocation(deviceEntity.fields as Record<string, unknown>)
+    : undefined;
+
+  if (!outputSocket) {
+    console.warn(
+      `[Sidekick] Could not resolve a committed audio output socket for created instrument "${trackName}" (${deviceEntityType}). ` +
+      'Skipping automatic mixer wiring.'
+    );
+    return;
+  }
+
   console.log(
     `[Sidekick] Connecting created instrument "${trackName}" to mixer via ${deviceEntityType}.${outputFieldName}.`
   );
 
   try {
+    let wiringError: unknown;
     await withTimeout(
       document.modify((transaction) => {
-        const existingChannelCount = transaction.entities.ofTypes('mixerChannel').get().length;
-        const mixerChannel = transaction.create('mixerChannel', {
-          displayParameters: {
-            displayName: trackName,
-            orderAmongStrips: existingChannelCount + 1
-          }
-        });
+        try {
+          const existingChannelCount = transaction.entities.ofTypes('mixerChannel').get().length;
+          const mixerChannel = transaction.create('mixerChannel', {
+            displayParameters: {
+              displayName: trackName,
+              orderAmongStrips: existingChannelCount + 1
+            }
+          });
 
-        transaction.create('desktopAudioCable', {
-          fromSocket: buildSchemaPathLocation(deviceId, `/${deviceEntityType}/${outputFieldName}` as SchemaPath),
-          toSocket: buildSchemaPathLocation(mixerChannel.id, '/mixerChannel/audioInput' as SchemaPath)
-        });
+          transaction.create('desktopAudioCable', {
+            fromSocket: outputSocket.location,
+            toSocket: mixerChannel.fields.audioInput.location
+          });
+        } catch (error) {
+          wiringError = error;
+        }
       }),
       WRITE_TRANSACTION_TIMEOUT_MS,
       `Timed out while connecting the created instrument "${trackName}" to the Audiotool mixer.`
     );
+    if (wiringError) {
+      console.warn(
+        `[Sidekick] Mixer wiring failed for created instrument "${trackName}". ` +
+        'The note track was created, but its audio was not connected automatically.',
+        wiringError
+      );
+      return;
+    }
     console.log(`[Sidekick] Connected created instrument "${trackName}" to a mixer channel.`);
   } catch (error) {
     console.warn(
@@ -785,15 +811,6 @@ function colorIndexForRole(role: GeneratedMidiTrack['role']): number {
 
 function beatsToTicks(beats: number): number {
   return Math.round(beats * Ticks.Beat);
-}
-
-function buildSchemaPathLocation(entityId: string, path: SchemaPath): NexusLocation {
-  const schemaLocation = schemaPathToSchemaLocation(path);
-  return {
-    entityId,
-    entityType: schemaLocation.entityType,
-    fieldIndex: [...schemaLocation.fieldIndex]
-  } as unknown as NexusLocation;
 }
 
 function resolveDeviceAudioOutputFieldName(fields: Record<string, unknown>): string | undefined {
