@@ -286,6 +286,7 @@ export function App() {
         const usedTrackIds = new Set<string>();
         const distributedTargets: string[] = [];
         let createdCount = 0;
+        let autoCreateUnavailable = false;
 
         for (const track of activeTracks) {
           const expectedInstrumentSlug = style.instruments?.[track.role];
@@ -293,23 +294,35 @@ export function App() {
           if (!target) {
             target = availableTracks.find((candidate) => !usedTrackIds.has(candidate.id));
           }
-          if (!target && services.nexus.createSuggestedInstrument) {
-            setStatus(`Creating ${track.role} instrument track for insertion...`);
-            addAction(`Creating ${track.role} instrument track for insertion...`);
-            console.log('[Sidekick] Creating insertion instrument.', {
-              generatedTrack: track.name,
-              role: track.role,
-              expectedInstrumentSlug: sanitizeAutoCreateInstrumentSlug(style.instruments?.[track.role]) ?? null
-            });
-            const created = await services.nexus.createSuggestedInstrument({
-              name: track.name,
-              role: track.role,
-              tags: [track.role],
-              audiotoolInstrumentSlug: sanitizeAutoCreateInstrumentSlug(style.instruments?.[track.role])
-            });
-            availableTracks.push(created);
-            target = created;
-            createdCount += 1;
+          if (!target && services.nexus.createSuggestedInstrument && !autoCreateUnavailable) {
+            try {
+              setStatus(`Creating ${track.role} instrument track for insertion...`);
+              addAction(`Creating ${track.role} instrument track for insertion...`);
+              console.log('[Sidekick] Creating insertion instrument.', {
+                generatedTrack: track.name,
+                role: track.role,
+                expectedInstrumentSlug: sanitizeAutoCreateInstrumentSlug(style.instruments?.[track.role]) ?? null
+              });
+              const created = await services.nexus.createSuggestedInstrument({
+                name: track.name,
+                role: track.role,
+                tags: [track.role],
+                audiotoolInstrumentSlug: sanitizeAutoCreateInstrumentSlug(style.instruments?.[track.role])
+              });
+              availableTracks.push(created);
+              target = created;
+              createdCount += 1;
+            } catch (error) {
+              autoCreateUnavailable = true;
+              console.warn(
+                '[Sidekick] Creating insertion instrument failed. Falling back to existing note lanes.',
+                error
+              );
+              addAction('Could not auto-create a new instrument lane; reusing existing note lanes for insertion.');
+            }
+          }
+          if (!target) {
+            target = availableTracks[0];
           }
           if (!target) {
             throw new Error('No compatible Audiotool note lane available for insertion.');

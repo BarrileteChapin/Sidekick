@@ -196,7 +196,8 @@ export class AudiotoolSdkNexusClient implements NexusClient {
           return regions;
         }),
         WRITE_TRANSACTION_TIMEOUT_MS,
-        'Timed out while submitting the MIDI insert to Audiotool. The synced document is not accepting write transactions.'
+        'Timed out while submitting the MIDI insert to Audiotool. The synced document is not accepting write transactions. ' +
+        'If this only happens on deployment, verify the deployed Audiotool client ID and redirect URL exactly match the app registration.'
       );
 
       console.log(`[Sidekick] MIDI insert transaction submitted with ${insertedRegions.length} region(s). Verifying sync...`);
@@ -303,104 +304,108 @@ export class AudiotoolSdkNexusClient implements NexusClient {
       let createdTrackId = '';
       let appliedPresetSlug = requestedPresetSlug;
 
-      const createTrackWithPreset = async (preset: ResolvedPreset | null, presetSlugForName: string): Promise<void> => {
-        await withTimeout(
-          document.modify((transaction) => {
-            const existingNoteTracks = transaction.entities.ofTypes('noteTrack').get();
-            const maxOrder = Math.max(
-              ...existingNoteTracks.map((track) => {
-                const order = track.fields.orderAmongTracks.value;
-                return typeof order === 'number' ? order : 0;
-              }),
-              0
-            );
+      await withTimeout(
+        document.modify((transaction) => {
+          const existingNoteTracks = transaction.entities.ofTypes('noteTrack').get();
+          const maxOrder = Math.max(
+            ...existingNoteTracks.map((track) => {
+              const order = track.fields.orderAmongTracks.value;
+              return typeof order === 'number' ? order : 0;
+            }),
+            0
+          );
 
-            const device = preset ? transaction.createDeviceFromPreset(preset) : transaction.create('gakki', {});
-            const playerLocation = normalizeLocation(device.location) ?? device.location;
+          let device: ReturnType<typeof transaction.createDeviceFromPreset> | ReturnType<typeof transaction.create>;
+          let presetSlugForName = requestedPresetSlug;
 
-            if ('displayName' in device.fields) {
-              transaction.update(device.fields.displayName, request.name);
-            }
-            if ('presetName' in device.fields) {
-              transaction.update(device.fields.presetName, normalizePresetName(presetSlugForName));
-            }
-            if ('positionX' in device.fields) {
-              transaction.update(device.fields.positionX, 600 + existingNoteTracks.length * 80);
-            }
-            if ('positionY' in device.fields) {
-              transaction.update(device.fields.positionY, 300 + existingNoteTracks.length * 80);
-            }
-
-            const noteTrack = transaction.create('noteTrack', {
-              player: playerLocation,
-              isEnabled: true,
-              orderAmongTracks: maxOrder + 1
-            });
-            createdTrackId = noteTrack.id;
-
-            const outputSocket = resolveDeviceAudioOutputLocation(device.fields as Record<string, unknown>);
-            if (!outputSocket) {
-              console.warn(
-                `[Sidekick] Created instrument "${request.name}" (${presetSlugForName}) without a known audio output socket. ` +
-                'Its note lane exists, but no mixer cable was added.'
-              );
-              return;
-            }
-
-            const existingChannelCount = transaction.entities.ofTypes('mixerChannel').get().length;
-            const mixerChannel = transaction.create('mixerChannel', {
-              displayParameters: {
-                displayName: request.name,
-                orderAmongStrips: existingChannelCount + 1
-              }
-            });
-
-            transaction.create('desktopAudioCable', {
-              fromSocket: normalizeLocation(outputSocket.location) ?? outputSocket.location,
-              toSocket: normalizeLocation(mixerChannel.fields.audioInput.location) ?? mixerChannel.fields.audioInput.location
-            });
-          }),
-          WRITE_TRANSACTION_TIMEOUT_MS,
-          `Timed out while creating the Audiotool instrument track "${request.name}". ` +
-          'The synced document is not accepting the track/mixer creation transaction.'
-        );
-      };
-
-      try {
-        await createTrackWithPreset(primaryPreset, requestedPresetSlug);
-      } catch (error) {
-        if (!isFieldIndexSliceError(error) || requestedPresetSlug === DEFAULT_PIANO_INSTRUMENT_SLUG) {
-          throw error;
-        }
-
-        console.warn(
-          `[Sidekick] Preset "${requestedPresetSlug}" failed with a pointer serialization error. ` +
-          `Retrying with default piano preset "${DEFAULT_PIANO_INSTRUMENT_SLUG}".`,
-          error
-        );
-
-        if (pianoFallbackPreset) {
           try {
-            await createTrackWithPreset(pianoFallbackPreset, DEFAULT_PIANO_INSTRUMENT_SLUG);
-            appliedPresetSlug = DEFAULT_PIANO_INSTRUMENT_SLUG;
-          } catch (fallbackError) {
-            if (!isFieldIndexSliceError(fallbackError)) {
-              throw fallbackError;
+            device = transaction.createDeviceFromPreset(primaryPreset);
+          } catch (error) {
+            if (!isFieldIndexSliceError(error)) {
+              throw error;
             }
 
-            console.warn(
-              `[Sidekick] Default piano preset also failed with pointer serialization issues. ` +
-              'Retrying with a raw Gakki device.',
-              fallbackError
-            );
-            await createTrackWithPreset(null, DEFAULT_PIANO_INSTRUMENT_SLUG);
-            appliedPresetSlug = DEFAULT_PIANO_INSTRUMENT_SLUG;
+            if (requestedPresetSlug !== DEFAULT_PIANO_INSTRUMENT_SLUG) {
+              console.warn(
+                `[Sidekick] Preset "${requestedPresetSlug}" failed with a pointer serialization error. ` +
+                `Retrying with default piano preset "${DEFAULT_PIANO_INSTRUMENT_SLUG}".`,
+                error
+              );
+            }
+
+            if (pianoFallbackPreset) {
+              try {
+                device = transaction.createDeviceFromPreset(pianoFallbackPreset);
+                presetSlugForName = DEFAULT_PIANO_INSTRUMENT_SLUG;
+              } catch (fallbackError) {
+                if (!isFieldIndexSliceError(fallbackError)) {
+                  throw fallbackError;
+                }
+
+                console.warn(
+                  `[Sidekick] Default piano preset also failed with pointer serialization issues. ` +
+                  'Retrying with a raw Gakki device.',
+                  fallbackError
+                );
+                device = transaction.create('gakki', {});
+                presetSlugForName = DEFAULT_PIANO_INSTRUMENT_SLUG;
+              }
+            } else {
+              device = transaction.create('gakki', {});
+              presetSlugForName = DEFAULT_PIANO_INSTRUMENT_SLUG;
+            }
           }
-        } else {
-          await createTrackWithPreset(null, DEFAULT_PIANO_INSTRUMENT_SLUG);
-          appliedPresetSlug = DEFAULT_PIANO_INSTRUMENT_SLUG;
-        }
-      }
+
+          appliedPresetSlug = presetSlugForName;
+          const playerLocation = normalizeLocation(device.location) ?? device.location;
+
+          if ('displayName' in device.fields) {
+            transaction.update(device.fields.displayName, request.name);
+          }
+          if ('presetName' in device.fields) {
+            transaction.update(device.fields.presetName, normalizePresetName(presetSlugForName));
+          }
+          if ('positionX' in device.fields) {
+            transaction.update(device.fields.positionX, 600 + existingNoteTracks.length * 80);
+          }
+          if ('positionY' in device.fields) {
+            transaction.update(device.fields.positionY, 300 + existingNoteTracks.length * 80);
+          }
+
+          const noteTrack = transaction.create('noteTrack', {
+            player: playerLocation,
+            isEnabled: true,
+            orderAmongTracks: maxOrder + 1
+          });
+          createdTrackId = noteTrack.id;
+
+          const outputSocket = resolveDeviceAudioOutputLocation(device.fields as Record<string, unknown>);
+          if (!outputSocket) {
+            console.warn(
+              `[Sidekick] Created instrument "${request.name}" (${presetSlugForName}) without a known audio output socket. ` +
+              'Its note lane exists, but no mixer cable was added.'
+            );
+            return;
+          }
+
+          const existingChannelCount = transaction.entities.ofTypes('mixerChannel').get().length;
+          const mixerChannel = transaction.create('mixerChannel', {
+            displayParameters: {
+              displayName: request.name,
+              orderAmongStrips: existingChannelCount + 1
+            }
+          });
+
+          transaction.create('desktopAudioCable', {
+            fromSocket: normalizeLocation(outputSocket.location) ?? outputSocket.location,
+            toSocket: normalizeLocation(mixerChannel.fields.audioInput.location) ?? mixerChannel.fields.audioInput.location
+          });
+        }),
+        WRITE_TRANSACTION_TIMEOUT_MS,
+        `Timed out while creating the Audiotool instrument track "${request.name}". ` +
+        'The synced document is not accepting the track/mixer creation transaction. ' +
+        'If this only happens on deployment, verify the deployed Audiotool client ID and redirect URL exactly match the app registration.'
+      );
 
       console.log(
         `[Sidekick] Instrument creation transaction submitted for "${request.name}" as track "${createdTrackId}". ` +

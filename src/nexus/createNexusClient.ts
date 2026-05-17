@@ -65,11 +65,11 @@ function resolveClientId(optionClientId: string | undefined): string | null {
   const explicitClientId = optionClientId?.trim();
   if (explicitClientId) return explicitClientId;
 
-  const overrideClientId = getStoredClientIdOverride();
-  if (overrideClientId) return overrideClientId;
-
   const configuredClientId = import.meta.env.VITE_AUDIOTOOL_CLIENT_ID?.trim();
   if (configuredClientId) return configuredClientId;
+
+  const overrideClientId = getStoredClientIdOverride();
+  if (overrideClientId) return overrideClientId;
 
   return getLegacyStoredClientId();
 }
