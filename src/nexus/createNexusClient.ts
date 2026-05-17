@@ -35,7 +35,7 @@ export function createNexusRuntime(options: NexusRuntimeOptions = {}): NexusRunt
     };
   }
 
-  const clientId = options.audiotoolClientId ?? getStoredClientId() ?? import.meta.env.VITE_AUDIOTOOL_CLIENT_ID;
+  const clientId = resolveClientId(options.audiotoolClientId);
   if (mode !== 'mock' && typeof clientId === 'string' && clientId.length > 0) {
     storeClientId(clientId);
     return {
@@ -53,6 +53,16 @@ export function createNexusRuntime(options: NexusRuntimeOptions = {}): NexusRunt
         ? 'Mock NEXUS'
         : 'Mock fallback; set VITE_AUDIOTOOL_CLIENT_ID or enter a client ID to enable Audiotool login'
   };
+}
+
+function resolveClientId(optionClientId: string | undefined): string | null {
+  const explicitClientId = optionClientId?.trim();
+  if (explicitClientId) return explicitClientId;
+
+  const configuredClientId = import.meta.env.VITE_AUDIOTOOL_CLIENT_ID?.trim();
+  if (configuredClientId) return configuredClientId;
+
+  return getStoredClientId();
 }
 
 function getConfiguredMode(): NexusRuntimeMode {
